@@ -19,10 +19,10 @@ jobs:
           sudo apt install -y gcc-mipsel-linux-gnu g++-mipsel-linux-gnu
           sudo apt install -y make cmake git pkg-config libtool autoconf automake
 
-      - name: Clone libretro core source (mgba)
+      - name: Clone libretro core source (pcsx_rearmed)
         run: |
           git clone https://github.com/libretro/pcsx_rearmed.git libretro-pcsx_rearmed
-          cd libretro-mgba
+          cd libretro-pcsx_rearmed
           git checkout master  # 正确的稳定分支
 
       - name: Build pcsx_rearmed libretro core for mips32el
@@ -40,6 +40,6 @@ jobs:
       - name: Upload build artifact
         uses: actions/upload-artifact@v4
         with:
-          name: mgba_libretro_mips32el
+          name: pcsx_rearmed_libretro_mips32el
           path: libretro-pcsx_rearmed/pcsx_rearmed_libretro.so
           retention-days: 30
