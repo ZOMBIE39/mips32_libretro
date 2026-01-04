@@ -16,22 +16,25 @@ jobs:
       - name: Install build dependencies
         run: |
           sudo apt update -y
+          # 关键修改1：启用mipsel架构的软件源（Ubuntu默认仅开启amd64）
+          sudo dpkg --add-architecture mipsel
+          sudo apt update -y
+          
           # 交叉编译工具链
           sudo apt install -y gcc-mipsel-linux-gnu g++-mipsel-linux-gnu
           # 基础编译工具
           sudo apt install -y make cmake git pkg-config libtool autoconf automake
-          # pcsx_rearmed依赖
+          # pcsx_rearmed依赖（补充mipsel架构的zlib）
+          sudo apt install -y libpng-dev:mipsel zlib1g-dev:mipsel libssl-dev:mipsel
+          # 兼容：同时安装本机架构依赖（避免部分脚本找错路径）
           sudo apt install -y libpng-dev zlib1g-dev libssl-dev
 
       - name: Clone libretro core source (pcsx_rearmed)
         run: |
-          # 关键修改1：clone时添加--recursive，自动拉取子模块（备选方案）
-          # git clone --recursive https://github.com/libretro/pcsx_rearmed.git libretro-pcsx_rearmed
-          # 兼容方案：先clone主仓库，再手动同步子模块（更稳定）
           git clone https://github.com/libretro/pcsx_rearmed.git libretro-pcsx_rearmed
           cd libretro-pcsx_rearmed
           git checkout master
-          # 关键修复：初始化并更新所有子模块（拉取libpicofe等依赖）
+          # 同步子模块
           git submodule init
           git submodule update
 
@@ -43,9 +46,9 @@ jobs:
           # 编译参数
           export CC=${CROSS_COMPILE}gcc
           export CXX=${CROSS_COMPILE}g++
-          export CFLAGS="-march=mips32 -mabi=32 -O2"
-          export CXXFLAGS="-march=mips32 -mabi=32 -O2"
-          export LDFLAGS="-march=mips32 -mabi=32"
+          export CFLAGS="-march=mips32 -mabi=32 -O2 -I/usr/mipsel-linux-gnu/include"
+          export CXXFLAGS="-march=mips32 -mabi=32 -O2 -I/usr/mipsel-linux-gnu/include"
+          export LDFLAGS="-march=mips32 -mabi=32 -L/usr/mipsel-linux-gnu/lib"
           
           # 执行configure（仅使用支持的参数）
           ./configure --platform=generic --dynarec=none
