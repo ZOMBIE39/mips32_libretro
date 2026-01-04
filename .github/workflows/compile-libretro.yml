@@ -19,14 +19,14 @@ jobs:
           # 保留基础编译工具，移除通用mipsel编译器（替换为Dingux专用工具链）
           sudo apt install -y make cmake git pkg-config libtool autoconf automake wget unzip
 
-      - name: Download Dingux MIPS32 cross-compile toolchain
+      - name: Download GCW0/Dingux MIPS32 cross-compile toolchain
         run: |
-          # 下载Dingux官方MIPS32工具链（OpenDingux buildroot出品）
-          wget https://github.com/shauninman/union-gkdpixel-toolchain/releases/download/v001/gcw0-toolchain.zip -O dingux-toolchain.tar.xz
+          # 下载指定的GCW0 Dingux工具链（ZIP格式）
+          wget https://github.com/shauninman/union-gkdpixel-toolchain/releases/download/v001/gcw0-toolchain.zip -O gcw0-toolchain.zip
           # 解压工具链到指定目录
           mkdir -p ~/dingux-toolchain
-          tar -xf dingux-toolchain.tar.xz -C ~/dingux-toolchain --strip-components=1
-          # 将工具链bin目录加入PATH
+          unzip gcw0-toolchain.zip -d ~/dingux-toolchain
+          # 将工具链bin目录加入PATH（适配gcw0-toolchain的目录结构）
           echo "PATH=$HOME/dingux-toolchain/bin:$PATH" >> $GITHUB_ENV
 
       - name: Clone libretro core source (pcsx_rearmed)
@@ -38,10 +38,10 @@ jobs:
       - name: Build pcsx_rearmed for Dingux MIPS32
         run: |
           cd libretro-pcsx_rearmed
-          # 指定Dingux专用交叉编译器（工具链自带的mipsel-linux-gcc）
+          # 指定GCW0 Dingux专用交叉编译器（工具链自带的mipsel-linux-gcc）
           export CC=mipsel-linux-gcc
           export CXX=mipsel-linux-g++
-          # Dingux MIPS32核心编译参数（适配Dingux设备特性：无FPU、小端、MIPS32r2）
+          # Dingux MIPS32核心编译参数（适配GCW0/Dingux设备特性：无FPU、小端、MIPS32r2）
           export CFLAGS="-march=mips32r2 -mabi=32 -msoft-float -O2 -fomit-frame-pointer -ffast-math"
           export CXXFLAGS="-march=mips32r2 -mabi=32 -msoft-float -O2 -fomit-frame-pointer -ffast-math"
           export LDFLAGS="-march=mips32r2 -mabi=32 -msoft-float -static-libgcc"
