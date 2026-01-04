@@ -8,26 +8,31 @@ on:
 
 jobs:
   build-mips32el:
-    runs-on: ubuntu-latest
+    # 关键修改1：切换到Ubuntu 22.04（jammy），该版本保留了mipsel架构的依赖包
+    runs-on: ubuntu-22.04
     steps:
       - name: Checkout repository
         uses: actions/checkout@v4
 
       - name: Install build dependencies
         run: |
+          # 关键修改2：更新源并启用mipsel架构，添加非交互参数
           sudo apt update -y
-          # 关键修改1：启用mipsel架构的软件源（Ubuntu默认仅开启amd64）
           sudo dpkg --add-architecture mipsel
-          sudo apt update -y
+          sudo apt update -y --fix-missing
           
-          # 交叉编译工具链
-          sudo apt install -y gcc-mipsel-linux-gnu g++-mipsel-linux-gnu
-          # 基础编译工具
-          sudo apt install -y make cmake git pkg-config libtool autoconf automake
-          # pcsx_rearmed依赖（补充mipsel架构的zlib）
-          sudo apt install -y libpng-dev:mipsel zlib1g-dev:mipsel libssl-dev:mipsel
-          # 兼容：同时安装本机架构依赖（避免部分脚本找错路径）
-          sudo apt install -y libpng-dev zlib1g-dev libssl-dev
+          # 安装交叉编译工具链（ubuntu 22.04下mipsel工具链完整）
+          sudo apt install -y --no-install-recommends \
+            gcc-mipsel-linux-gnu g++-mipsel-linux-gnu \
+            make cmake git pkg-config libtool autoconf automake
+          
+          # 安装mipsel架构的依赖包（22.04源中存在这些包）
+          sudo apt install -y --no-install-recommends \
+            libpng-dev:mipsel zlib1g-dev:mipsel libssl-dev:mipsel
+          
+          # 兼容：安装本机架构依赖（避免脚本路径错误）
+          sudo apt install -y --no-install-recommends \
+            libpng-dev zlib1g-dev libssl-dev
 
       - name: Clone libretro core source (pcsx_rearmed)
         run: |
