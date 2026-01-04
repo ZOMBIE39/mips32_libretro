@@ -1,45 +1,41 @@
 name: Compile QuickNES MIPS32 Little Endian
 
 on:
-  workflow_dispatch:  # 仅手动触发，方便测试
+  workflow_dispatch:
 
 jobs:
   build:
     runs-on: ubuntu-22.04
     steps:
-      - name: Install required dependencies
+      - name: Install dependencies
         run: |
-          # 更新源并安装mips32el交叉编译器和基础工具
           sudo apt update -y
           sudo apt install -y gcc-mipsel-linux-gnu git
 
-      - name: Clone QuickNES Core source code
+      - name: Clone QuickNES Core (with directory check)
         run: |
-          # 克隆官方QuickNES核心仓库
+          # 克隆仓库并查看完整目录结构（调试关键）
           git clone --depth=1 https://github.com/libretro/QuickNES_Core.git
-          # 关键：查看仓库目录结构（调试用，确认文件位置）
-          ls -la QuickNES_Core/
-          # 列出所有.c文件，确认编译源文件存在
-          ls -la QuickNES_Core/*.c || echo "No .c files in root, check subdirs"
+          echo "=== QuickNES_Core 目录结构 ==="
+          tree -L 2 QuickNES_Core/  # 显示2级目录，直观看到src/inc目录
+          echo "=== 所有C文件位置 ==="
+          find QuickNES_Core/ -name "*.c"  # 列出所有.c文件的路径
 
-      - name: Compile QuickNES Core for mips32el
+      - name: Compile QuickNES Core for mips32el (fixed path)
         run: |
-          # 切换到正确的目录（仓库根目录）
           cd QuickNES_Core
-          # 编译命令修正：直接在根目录编译，补充必要编译参数
-          # -mips32：指定mips32架构
-          # -EL：强制小端模式
-          # -fPIC：生成位置无关代码（动态库必需）
-          # -shared：编译为动态库（libretro核心标准格式）
-          # -O2：优化编译
-          # -lm：链接数学库
-          # -Wall：显示编译警告（便于排查问题）
+          # 编译命令修正：
+          # 1. src/*.c：匹配src目录下的所有核心源码
+          # 2. libretro.c：匹配根目录的libretro接口文件
+          # 3. -Iinc：指定头文件目录（必须，否则找不到头文件）
+          # 4. 保留mips32el核心参数：-mips32 -EL
           mipsel-linux-gnu-gcc -mips32 -EL -O2 -fPIC -shared \
-            *.c -o quicknes_libretro.so -lm -Wall
-          # 验证编译产物是否存在
-          ls -la quicknes_libretro.so
-          # 验证产物架构（关键：确认是mips32小端）
-          file quicknes_libretro.so
+            src/*.c libretro.c -Iinc -o quicknes_libretro.so -lm -Wall
+          
+          # 验证编译结果
+          echo "=== 编译产物信息 ==="
+          ls -la quicknes_libretro.so  # 确认文件生成
+          file quicknes_libretro.so    # 确认架构是mips32小端
 
       - name: Upload compiled core
         uses: actions/upload-artifact@v4
