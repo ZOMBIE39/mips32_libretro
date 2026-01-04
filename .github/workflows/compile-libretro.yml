@@ -1,56 +1,45 @@
-# 工作流名称，会显示在GitHub Actions面板中
 name: Build MIPS32 Little-Endian Libretro Core
 
-# 触发条件：push代码、手动触发（workflow_dispatch）
 on:
   push:
     paths:
-      - '.github/workflows/**'  # 仅修改工作流文件时触发
-  workflow_dispatch:  # 允许手动触发
+      - '.github/workflows/**'
+  workflow_dispatch:
 
-# 作业定义：在Ubuntu环境下编译
 jobs:
   build-mips32el:
-    runs-on: ubuntu-latest  # 使用最新版Ubuntu Runner
+    runs-on: ubuntu-latest
     steps:
-      # 步骤1：检出仓库代码（基础操作，必备）
       - name: Checkout repository
         uses: actions/checkout@v4
 
-      # 步骤2：安装交叉编译工具链和依赖
       - name: Install build dependencies
         run: |
-          # 更新系统包列表
           sudo apt update -y
-          # 安装mips32小端交叉编译工具链（核心依赖）
           sudo apt install -y gcc-mipsel-linux-gnu g++-mipsel-linux-gnu
-          # 安装编译必备工具
           sudo apt install -y make cmake git pkg-config libtool autoconf automake
 
-      # 步骤3：下载Libretro核心源码（以mgba核心为例，可替换为其他核心）
       - name: Clone libretro core source (mgba)
         run: |
           git clone https://github.com/libretro/mgba.git libretro-mgba
           cd libretro-mgba
-          git checkout latest  # 切换到稳定版
+          # 修复：将 latest 改为 master（mgba的稳定主分支）
+          git checkout master  # 切换到mgba的稳定主分支
+          # 可选：也可以直接删除上面这行，因为clone后默认就是master分支
 
-      # 步骤4：交叉编译mips32el架构的libretro核心
       - name: Build mgba libretro core for mips32el
         run: |
           cd libretro-mgba
-          # 设置交叉编译参数（关键：指定mips32小端架构）
           export CC=mipsel-linux-gnu-gcc
           export CXX=mipsel-linux-gnu-g++
           export CFLAGS="-march=mips32 -mabi=32 -mlittle-endian -O2"
           export CXXFLAGS="-march=mips32 -mabi=32 -mlittle-endian -O2"
           export LDFLAGS="-march=mips32 -mabi=32 -mlittle-endian"
-          # 编译libretro核心（不同核心的编译命令可能略有差异）
           make -f Makefile.libretro -j$(nproc)
 
-      # 步骤5：上传编译产物（方便下载）
       - name: Upload build artifact
         uses: actions/upload-artifact@v4
         with:
           name: mgba_libretro_mips32el
-          path: libretro-mgba/mgba_libretro.so  # 编译出的核心文件路径
-          retention-days: 30  # 产物保留30天
+          path: libretro-mgba/mgba_libretro.so
+          retention-days: 30
