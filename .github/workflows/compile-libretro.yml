@@ -1,0 +1,28 @@
+name: Compile QuickNES MIPS32 Little Endian
+
+on:
+  workflow_dispatch:
+
+jobs:
+  build:
+    runs-on: ubuntu-22.04
+    steps:
+      - name: Install dependencies
+        run: |
+          sudo apt update -y
+          sudo apt install -y gcc-mipsel-linux-gnu git
+
+      - name: Clone QuickNES core
+        run: git clone https://github.com/libretro/QuickNES_Core.git
+
+      - name: Compile for mips32el
+        run: |
+          cd QuickNES_Core/quicknes_libretro
+          # 直接用交叉编译器编译，无需configure
+          mipsel-linux-gnu-gcc -mips32 -EL -O2 -fPIC -shared *.c -o quicknes_libretro.so -lm
+
+      - name: Upload artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: quicknes-mips32el
+          path: QuickNES_Core/quicknes_libretro/quicknes_libretro.so
