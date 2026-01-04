@@ -1,0 +1,74 @@
+# 工作流名称，会显示在GitHub Actions面板中
+name: Compile RetroArch MIPS32 Little Endian
+
+# 触发条件：手动触发（workflow_dispatch）+ 推送到main分支时触发
+on:
+  workflow_dispatch:  # 手动触发（推荐新手先手动测试）
+  push:
+    branches: [ main ]
+
+# 定义执行的任务
+jobs:
+  build:
+    # 运行环境：选择Ubuntu 22.04（LTS版本，依赖更稳定）
+    runs-on: ubuntu-22.04
+
+    # 任务步骤
+    steps:
+      # 步骤1：拉取仓库代码到运行器（虽然仓库是空的，但这是Action的标准步骤）
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      # 步骤2：安装编译依赖（包括交叉编译工具链和RetroArch编译依赖）
+      - name: Install build dependencies
+        run: |
+          # 更新系统源
+          sudo apt update -y
+          # 安装基础编译工具
+          sudo apt install -y build-essential git libtool autoconf automake pkg-config
+          # 安装mips32小端交叉编译工具链（核心！gcc-mipsel-linux-gnu对应mips32el架构）
+          sudo apt install -y gcc-mipsel-linux-gnu g++-mipsel-linux-gnu
+          # 安装RetroArch编译所需的额外依赖
+          sudo apt install -y libsdl2-dev libfreetype6-dev libpng-dev libzip-dev
+
+      # 步骤3：克隆RetroArch源码（官方仓库，也可替换为指定分支/版本）
+      - name: Clone RetroArch source code
+        run: |
+          git clone --depth=1 https://github.com/libretro/RetroArch.git retroarch-src
+          cd retroarch-src
+          # 初始化并更新子模块（RetroArch核心依赖子模块）
+          git submodule update --init --recursive
+
+      # 步骤4：配置编译参数（针对mips32el架构）
+      - name: Configure RetroArch for MIPS32el
+        run: |
+          cd retroarch-src
+          # 生成配置文件，指定交叉编译前缀、架构、小端模式
+          ./configure \
+            --host=mipsel-linux-gnu \  # 交叉编译目标架构：mipsel（mips32小端）
+            --prefix=/usr \            # 安装前缀（编译后产物路径）
+            --disable-sdl \            # 可选：禁用不需要的SDL（根据需求调整）
+            --disable-opengl \         # MIPS32设备通常无OpenGL，禁用
+            --disable-vulkan \         # 禁用Vulkan
+            --enable-static=yes \      # 编译静态库（便于移植）
+            --enable-shared=no         # 禁用动态库（减少依赖）
+
+      # 步骤5：编译RetroArch核心
+      - name: Compile RetroArch
+        run: |
+          cd retroarch-src
+          # 多线程编译（-j后面的数字=运行器CPU核心数，加速编译）
+          make -j$(nproc)
+          # 验证编译产物的架构（关键！确认是否为mips32el）
+          file retroarch  # 输出会显示"ELF 32-bit LSB executable, MIPS, MIPS32 rel2 version 1"
+
+      # 步骤6：上传编译产物（方便下载）
+      - name: Upload build artifact
+        uses: actions/upload-artifact@v4
+        with:
+          # 产物名称（下载时显示的文件名）
+          name: retroarch-mips32el
+          # 产物路径（编译后的retroarch可执行文件位置）
+          path: retroarch-src/retroarch
+          # 产物保留时间（默认90天，可自定义）
+          retention-days: 30
