@@ -1,56 +1,82 @@
-name: Build Dingux MIPS32 Libretro Core
+name: Build pcsx_rearmed libretro core for GKD pixel
 
+# 触发条件：手动触发、push 到 main 分支、PR 到 main 分支
 on:
-  push:
-    paths:
-      - '.github/workflows/**'
   workflow_dispatch:
+  push:
+    branches: [ main ]
+    paths-ignore: [ '**.md', 'LICENSE' ]
+  pull_request:
+    branches: [ main ]
 
+# 运行环境
 jobs:
-  build-dingux-mips32:
-    runs-on: ubuntu-latest
+  build:
+    runs-on: ubuntu-22.04
     steps:
-      - name: Checkout repository
+      # 步骤1：检出基础工具（可选，若仓库包含自定义脚本则替换为检出仓库源码）
+      - name: Checkout base tools
         uses: actions/checkout@v4
+        with:
+          fetch-depth: 1
 
-      - name: Install base build dependencies
+      # 步骤2：安装系统依赖（基础编译工具）
+      - name: Install system dependencies
         run: |
-          sudo apt update -y
-          # 保留基础编译工具，移除通用mipsel编译器（替换为Dingux专用工具链）
-          sudo apt install -y make cmake git pkg-config libtool autoconf automake wget unzip
+          sudo apt update && sudo apt install -y \
+            wget tar make gcc g++ unzip pkg-config libtool autoconf automake
 
-      - name: Download GCW0/Dingux MIPS32 cross-compile toolchain
+      # 步骤3：下载并解压 GKD pixel 工具链
+      - name: Download and extract GKD pixel toolchain
         run: |
-          # 下载指定的GCW0 Dingux工具链（ZIP格式）
-          wget https://github.com/shauninman/union-gkdpixel-toolchain/releases/download/v001/gcw0-toolchain.zip -O gcw0-toolchain.zip
-          # 解压工具链到指定目录
-          mkdir -p ~/dingux-toolchain
-          unzip gcw0-toolchain.zip -d ~/dingux-toolchain
-          # 将工具链bin目录加入PATH（适配gcw0-toolchain的目录结构）
-          echo "PATH=$HOME/dingux-toolchain/bin:$PATH" >> $GITHUB_ENV
+          # 创建工具链目录
+          mkdir -p ~/toolchain
+          # 下载工具链
+          wget -q https://github.com/game-de-it/GKD_pixel/releases/download/GKDpixel-toolchain-v1/mipsel-gcw0-linux-uclibc_sdk-buildroot.tar.gz -O ~/toolchain/toolchain.tar.gz
+          # 解压工具链（保留目录结构）
+          tar -xf ~/toolchain/toolchain.tar.gz -C ~/toolchain --strip-components=1
+          # 验证工具链是否解压成功
+          ls -la ~/toolchain/bin/ | grep mipsel-gcw0-linux-uclibc-gcc
 
-      - name: Clone libretro core source (pcsx_rearmed)
+      # 步骤4：配置交叉编译环境变量
+      - name: Configure cross-compile environment
         run: |
-          git clone https://github.com/libretro/pcsx_rearmed.git libretro-pcsx_rearmed
-          cd libretro-pcsx_rearmed
-          git checkout master
+          # 将工具链添加到系统 PATH
+          echo "TOOLCHAIN_PATH=$HOME/toolchain/bin" >> $GITHUB_ENV
+          echo "$HOME/toolchain/bin" >> $GITHUB_PATH
+          # 设置交叉编译前缀
+          echo "CROSS_COMPILE=mipsel-gcw0-linux-uclibc-" >> $GITHUB_ENV
+          # 设置目标架构和编译参数
+          echo "CFLAGS=-mips32r2 -mtune=mips32r2 -mhard-float -ffast-math -O2" >> $GITHUB_ENV
+          echo "CXXFLAGS=-mips32r2 -mtune=mips32r2 -mhard-float -ffast-math -O2" >> $GITHUB_ENV
+          echo "ARCH=mips" >> $GITHUB_ENV
 
-      - name: Build pcsx_rearmed for Dingux MIPS32
+      # 步骤5：克隆 pcsx_rearmed 源码（官方仓库）
+      - name: Clone pcsx_rearmed source code
         run: |
-          cd libretro-pcsx_rearmed
-          # 指定GCW0 Dingux专用交叉编译器（工具链自带的mipsel-linux-gcc）
-          export CC=mipsel-linux-gcc
-          export CXX=mipsel-linux-g++
-          # Dingux MIPS32核心编译参数（适配GCW0/Dingux设备特性：无FPU、小端、MIPS32r2）
-          export CFLAGS="-march=mips32r2 -mabi=32 -msoft-float -O2 -fomit-frame-pointer -ffast-math"
-          export CXXFLAGS="-march=mips32r2 -mabi=32 -msoft-float -O2 -fomit-frame-pointer -ffast-math"
-          export LDFLAGS="-march=mips32r2 -mabi=32 -msoft-float -static-libgcc"
-          # 执行编译（适配Dingux的链接器要求）
-          make -f Makefile.libretro -j$(nproc) platform=dingux
+          git clone --depth 1 https://github.com/libretro/pcsx_rearmed.git ~/pcsx_rearmed
 
+      # 步骤6：编译 libretro 核心
+      - name: Build pcsx_rearmed libretro core
+        run: |
+          cd ~/pcsx_rearmed
+          # 使用交叉编译工具链编译，指定目标为 libretro
+          make -f Makefile.libretro \
+            CC=${{ env.CROSS_COMPILE }}gcc \
+            CXX=${{ env.CROSS_COMPILE }}g++ \
+            AR=${{ env.CROSS_COMPILE }}ar \
+            RANLIB=${{ env.CROSS_COMPILE }}ranlib \
+            CFLAGS="${{ env.CFLAGS }}" \
+            CXXFLAGS="${{ env.CXXFLAGS }}" \
+            ARCH=${{ env.ARCH }} \
+            -j$(nproc)
+          # 验证编译产物
+          ls -la ~/pcsx_rearmed/pcsx_rearmed_libretro.so
+
+      # 步骤7：上传编译产物（方便下载）
       - name: Upload build artifact
         uses: actions/upload-artifact@v4
         with:
-          name: pcsx_rearmed_libretro_dingux_mips32
-          path: libretro-pcsx_rearmed/pcsx_rearmed_libretro.so
-          retention-days: 30
+          name: pcsx_rearmed-gkd-pixel
+          path: ~/pcsx_rearmed/pcsx_rearmed_libretro.so
+          retention-days: 30 # 产物保留30天
