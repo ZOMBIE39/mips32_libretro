@@ -1,78 +1,56 @@
-name: Build mips32el libretro core
+# 工作流名称，会显示在GitHub Actions面板中
+name: Build MIPS32 Little-Endian Libretro Core
 
+# 触发条件：push代码、手动触发（workflow_dispatch）
 on:
   push:
-    branches: [ main ]
-  workflow_dispatch:
+    paths:
+      - '.github/workflows/**'  # 仅修改工作流文件时触发
+  workflow_dispatch:  # 允许手动触发
 
+# 作业定义：在Ubuntu环境下编译
 jobs:
-  build:
-    runs-on: ubuntu-22.04
+  build-mips32el:
+    runs-on: ubuntu-latest  # 使用最新版Ubuntu Runner
     steps:
+      # 步骤1：检出仓库代码（基础操作，必备）
       - name: Checkout repository
         uses: actions/checkout@v4
 
-      - name: Install cross-compiler and dependencies
+      # 步骤2：安装交叉编译工具链和依赖
+      - name: Install build dependencies
         run: |
+          # 更新系统包列表
           sudo apt update -y
-          # 安装完整的依赖（包含fbneo/fceumm所需的所有基础库）
-          sudo apt install -y gcc-mipsel-linux-gnu g++-mipsel-linux-gnu \
-            make git build-essential libsdl2-dev zlib1g-dev libpng-dev
+          # 安装mips32小端交叉编译工具链（核心依赖）
+          sudo apt install -y gcc-mipsel-linux-gnu g++-mipsel-linux-gnu
+          # 安装编译必备工具
+          sudo apt install -y make cmake git pkg-config libtool autoconf automake
 
-      # 方案1：先编译fceumm（兼容性最好，验证环境），注释掉可换fbneo
-      - name: Clone fceumm core (stable for test)
+      # 步骤3：下载Libretro核心源码（以mgba核心为例，可替换为其他核心）
+      - name: Clone libretro core source (mgba)
         run: |
-          git clone https://github.com/libretro/libretro-fceumm.git libretro-fceumm
-          # 验证目录是否存在
-          ls -l libretro-fceumm/Makefile || echo "Makefile not found!"
+          git clone https://github.com/libretro/mgba.git libretro-mgba
+          cd libretro-mgba
+          git checkout latest  # 切换到稳定版
 
-      # 方案2：编译fbneo（需特殊适配），取消注释即可启用
-      # - name: Clone fbneo core
-      #   run: |
-      #     git clone https://github.com/libretro/FBNeo.git libretro-fbneo
-      #     ls -l libretro-fbneo/src/burner/libretro/Makefile || echo "Makefile not found!"
-
-      - name: Cross compile fceumm for mips32el (stable)
+      # 步骤4：交叉编译mips32el架构的libretro核心
+      - name: Build mgba libretro core for mips32el
         run: |
-          # 开启详细日志，出错立即停止（便于排查）
-          set -ex
-          cd libretro-fceumm
-          # 配置交叉编译工具链（核心参数）
+          cd libretro-mgba
+          # 设置交叉编译参数（关键：指定mips32小端架构）
           export CC=mipsel-linux-gnu-gcc
           export CXX=mipsel-linux-gnu-g++
-          export AR=mipsel-linux-gnu-ar
-          export LD=mipsel-linux-gnu-ld
-          # 编译fceumm：仅保留核心架构参数（fceumm不识别自定义参数）
-          make -j$(nproc) \
-            platform=unix \
-            ARCH=mips32 \
-            CFLAGS="-mips32 -EL -O2 -mhard-float" \
-            CXXFLAGS="-mips32 -EL -O2 -mhard-float" \
-            LDFLAGS="-mips32 -EL"
-          # 验证编译产物（关键：确认架构是mips32小端）
-          file fceumm_libretro.so
-          # 列出产物信息
-          ls -lh fceumm_libretro.so
+          export CFLAGS="-march=mips32 -mabi=32 -mlittle-endian -O2"
+          export CXXFLAGS="-march=mips32 -mabi=32 -mlittle-endian -O2"
+          export LDFLAGS="-march=mips32 -mabi=32 -mlittle-endian"
+          # 编译libretro核心（不同核心的编译命令可能略有差异）
+          make -f Makefile.libretro -j$(nproc)
 
-      # 适配fbneo的编译步骤（需取消注释）
-      # - name: Cross compile fbneo for mips32el
-      #   run: |
-      #     set -ex
-      #     cd libretro-fbneo/src/burner/libretro
-      #     export CC=mipsel-linux-gnu-gcc
-      #     export CXX=mipsel-linux-gnu-g++
-      #     # fbneo的Makefile仅需指定编译器和架构参数，无需自定义ENDIANNESS
-      #     make -j$(nproc) \
-      #       TARGET=mips \
-      #       CFLAGS="-mips32 -EL -O2 -DNDEBUG" \
-      #       CXXFLAGS="-mips32 -EL -O2 -DNDEBUG" \
-      #       LDFLAGS="-mips32 -EL"
-      #     file fbneo_libretro.so
-
+      # 步骤5：上传编译产物（方便下载）
       - name: Upload build artifact
         uses: actions/upload-artifact@v4
         with:
-          name: fceumm-libretro-mips32el
-          path: libretro-fceumm/fceumm_libretro.so
-          # 若编译fbneo，替换为：
-          # path: libretro-fbneo/src/burner/libretro/fbneo_libretro.so
+          name: mgba_libretro_mips32el
+          path: libretro-mgba/mgba_libretro.so  # 编译出的核心文件路径
+          retention-days: 30  # 产物保留30天
