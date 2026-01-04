@@ -23,18 +23,18 @@ jobs:
         run: |
           git clone https://github.com/libretro/mgba.git libretro-mgba
           cd libretro-mgba
-          # 修复：将 latest 改为 master（mgba的稳定主分支）
-          git checkout master  # 切换到mgba的稳定主分支
-          # 可选：也可以直接删除上面这行，因为clone后默认就是master分支
+          git checkout master  # 正确的稳定分支
 
       - name: Build mgba libretro core for mips32el
         run: |
           cd libretro-mgba
           export CC=mipsel-linux-gnu-gcc
           export CXX=mipsel-linux-gnu-g++
-          export CFLAGS="-march=mips32 -mabi=32 -mlittle-endian -O2"
-          export CXXFLAGS="-march=mips32 -mabi=32 -mlittle-endian -O2"
-          export LDFLAGS="-march=mips32 -mabi=32 -mlittle-endian"
+          # 修复：删除所有 -mlittle-endian 选项（mipsel编译器默认小端）
+          export CFLAGS="-march=mips32 -mabi=32 -O2"
+          export CXXFLAGS="-march=mips32 -mabi=32 -O2"
+          export LDFLAGS="-march=mips32 -mabi=32"
+          # 执行编译
           make -f Makefile.libretro -j$(nproc)
 
       - name: Upload build artifact
