@@ -32,20 +32,20 @@ jobs:
       - name: Build pcsx_rearmed libretro core for mips32el
         run: |
           cd libretro-pcsx_rearmed
+          # 关键修改1：通过CROSS_COMPILE指定交叉编译工具链前缀（替代--host）
+          export CROSS_COMPILE=mipsel-linux-gnu-
           # 编译参数（沿用修复后的mips32el配置）
-          export CC=mipsel-linux-gnu-gcc
-          export CXX=mipsel-linux-gnu-g++
+          export CC=${CROSS_COMPILE}gcc
+          export CXX=${CROSS_COMPILE}g++
           export CFLAGS="-march=mips32 -mabi=32 -O2"
           export CXXFLAGS="-march=mips32 -mabi=32 -O2"
           export LDFLAGS="-march=mips32 -mabi=32"
           
-          # 关键修复1：先执行configure，指定mips32el交叉编译架构
-          ./configure --host=mipsel-linux-gnu \
-                      --disable-sdl \          # 禁用SDL（libretro核心无需SDL）
-                      --enable-libretro       # 启用libretro核心编译模式
+          # 关键修改2：仅使用configure支持的参数（--platform=generic适配libretro）
+          ./configure --platform=generic --dynarec=none
           
-          # 关键修复2：configure完成后再执行make
-          make -j$(nproc)
+          # 执行编译（libretro核心编译需指定libretro Makefile）
+          make -f Makefile.libretro -j$(nproc)
 
       - name: Upload build artifact
         uses: actions/upload-artifact@v4
