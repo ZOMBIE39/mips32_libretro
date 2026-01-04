@@ -1,4 +1,4 @@
-name: Build MIPS32 Little-Endian Libretro Core
+name: Build MIPS32 Little-Endian PCSX-ReARMed Core
 
 on:
   push:
@@ -10,36 +10,45 @@ jobs:
   build-mips32el:
     runs-on: ubuntu-latest
     steps:
+      # 步骤1：检出仓库代码
       - name: Checkout repository
         uses: actions/checkout@v4
 
+      # 步骤2：安装编译依赖（补充pcsx_rearmed所需依赖）
       - name: Install build dependencies
         run: |
           sudo apt update -y
+          # 保留mips32el交叉编译工具链
           sudo apt install -y gcc-mipsel-linux-gnu g++-mipsel-linux-gnu
+          # 基础编译工具
           sudo apt install -y make cmake git pkg-config libtool autoconf automake
+          # pcsx_rearmed额外依赖（必须，否则编译失败）
+          sudo apt install -y libpng-dev zlib1g-dev libssl-dev
 
-      - name: Clone libretro core source (mgba)
+      # 步骤3：克隆pcsx_rearmed源码（替换原mgba地址）
+      - name: Clone libretro core source (pcsx_rearmed)
         run: |
-          git clone https://github.com/libretro/mgba.git libretro-mgba
-          cd libretro-mgba
-          git checkout master  # 正确的稳定分支
+          git clone https://github.com/libretro/pcsx_rearmed.git libretro-pcsx_rearmed
+          cd libretro-pcsx_rearmed
+          git checkout master  # pcsx_rearmed的稳定主分支
 
-      - name: Build mgba libretro core for mips32el
+      # 步骤4：交叉编译mips32el架构的pcsx_rearmed核心
+      - name: Build pcsx_rearmed libretro core for mips32el
         run: |
-          cd libretro-mgba
+          cd libretro-pcsx_rearmed
+          # 沿用修复后的mips32el编译参数（无-mlittle-endian）
           export CC=mipsel-linux-gnu-gcc
           export CXX=mipsel-linux-gnu-g++
-          # 修复：删除所有 -mlittle-endian 选项（mipsel编译器默认小端）
           export CFLAGS="-march=mips32 -mabi=32 -O2"
           export CXXFLAGS="-march=mips32 -mabi=32 -O2"
           export LDFLAGS="-march=mips32 -mabi=32"
-          # 执行编译
-          make -f Makefile.libretro -j$(nproc)
+          # pcsx_rearmed的libretro编译命令（无需指定Makefile.libretro）
+          make -j$(nproc)
 
+      # 步骤5：上传编译产物（调整产物路径和名称）
       - name: Upload build artifact
         uses: actions/upload-artifact@v4
         with:
-          name: mgba_libretro_mips32el
-          path: libretro-mgba/mgba_libretro.so
+          name: pcsx_rearmed_libretro_mips32el
+          path: libretro-pcsx_rearmed/pcsx_rearmed_libretro.so  # 对应pcsx_rearmed的产物
           retention-days: 30
