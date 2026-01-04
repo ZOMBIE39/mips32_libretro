@@ -1,4 +1,4 @@
-name: Build MIPS32 Little-Endian Libretro Core
+name: Build Dingux MIPS32 Libretro Core
 
 on:
   push:
@@ -7,39 +7,50 @@ on:
   workflow_dispatch:
 
 jobs:
-  build-mips32el:
+  build-dingux-mips32:
     runs-on: ubuntu-latest
     steps:
       - name: Checkout repository
         uses: actions/checkout@v4
 
-      - name: Install build dependencies
+      - name: Install base build dependencies
         run: |
           sudo apt update -y
-          sudo apt install -y gcc-mipsel-linux-gnu g++-mipsel-linux-gnu
-          sudo apt install -y make cmake git pkg-config libtool autoconf automake
+          # 保留基础编译工具，移除通用mipsel编译器（替换为Dingux专用工具链）
+          sudo apt install -y make cmake git pkg-config libtool autoconf automake wget unzip
+
+      - name: Download Dingux MIPS32 cross-compile toolchain
+        run: |
+          # 下载Dingux官方MIPS32工具链（OpenDingux buildroot出品）
+          wget https://github.com/OpenDingux/buildroot/releases/download/2021.02-odxu/dingux-toolchain-mipsel-gcc10.2.tar.xz -O dingux-toolchain.tar.xz
+          # 解压工具链到指定目录
+          mkdir -p ~/dingux-toolchain
+          tar -xf dingux-toolchain.tar.xz -C ~/dingux-toolchain --strip-components=1
+          # 将工具链bin目录加入PATH
+          echo "PATH=$HOME/dingux-toolchain/bin:$PATH" >> $GITHUB_ENV
 
       - name: Clone libretro core source (pcsx_rearmed)
         run: |
           git clone https://github.com/libretro/pcsx_rearmed.git libretro-pcsx_rearmed
           cd libretro-pcsx_rearmed
-          git checkout master  # 正确的稳定分支
+          git checkout master
 
-      - name: Build pcsx_rearmed libretro core for mips32el
+      - name: Build pcsx_rearmed for Dingux MIPS32
         run: |
           cd libretro-pcsx_rearmed
-          export CC=mipsel-linux-gnu-gcc
-          export CXX=mipsel-linux-gnu-g++
-          # 修复：删除所有 -mlittle-endian 选项（mipsel编译器默认小端）
-          export CFLAGS="-march=mips32 -mabi=32 -O2"
-          export CXXFLAGS="-march=mips32 -mabi=32 -O2"
-          export LDFLAGS="-march=mips32 -mabi=32"
-          # 执行编译
-          make -f Makefile.libretro -j$(nproc)
+          # 指定Dingux专用交叉编译器（工具链自带的mipsel-linux-gcc）
+          export CC=mipsel-linux-gcc
+          export CXX=mipsel-linux-g++
+          # Dingux MIPS32核心编译参数（适配Dingux设备特性：无FPU、小端、MIPS32r2）
+          export CFLAGS="-march=mips32r2 -mabi=32 -msoft-float -O2 -fomit-frame-pointer -ffast-math"
+          export CXXFLAGS="-march=mips32r2 -mabi=32 -msoft-float -O2 -fomit-frame-pointer -ffast-math"
+          export LDFLAGS="-march=mips32r2 -mabi=32 -msoft-float -static-libgcc"
+          # 执行编译（适配Dingux的链接器要求）
+          make -f Makefile.libretro -j$(nproc) platform=dingux
 
       - name: Upload build artifact
         uses: actions/upload-artifact@v4
         with:
-          name: pcsx_rearmed_libretro_mips32el
+          name: pcsx_rearmed_libretro_dingux_mips32
           path: libretro-pcsx_rearmed/pcsx_rearmed_libretro.so
           retention-days: 30
