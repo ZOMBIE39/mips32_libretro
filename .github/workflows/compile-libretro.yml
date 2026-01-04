@@ -22,7 +22,7 @@ jobs:
       - name: Download Dingux MIPS32 cross-compile toolchain
         run: |
           # 下载Dingux官方MIPS32工具链（OpenDingux buildroot出品）
-          wget https://github.com/OpenDingux/buildroot/releases/download/2021.02-odxu/dingux-toolchain-mipsel-gcc10.2.tar.xz -O dingux-toolchain.tar.xz
+          wget https://github.com/shauninman/union-gkdpixel-toolchain/releases/download/v001/gcw0-toolchain.zip -O dingux-toolchain.tar.xz
           # 解压工具链到指定目录
           mkdir -p ~/dingux-toolchain
           tar -xf dingux-toolchain.tar.xz -C ~/dingux-toolchain --strip-components=1
