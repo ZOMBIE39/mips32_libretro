@@ -1,45 +1,66 @@
-name: Compile QuickNES MIPS32 Little Endian
+# 工作流名称，会显示在GitHub Actions页面
+name: Build mips32el libretro core
 
+# 触发条件：推送到main分支时自动运行，也支持手动触发
 on:
-  workflow_dispatch:
+  push:
+    branches: [ main ]
+  workflow_dispatch:  # 手动触发开关
 
+# 定义编译任务
 jobs:
   build:
+    # 运行环境：Ubuntu 22.04（LTS版，依赖更稳定）
     runs-on: ubuntu-22.04
+    
     steps:
-      - name: Install dependencies
+      # 步骤1：拉取仓库代码（空仓库也需要这一步初始化环境）
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      # 步骤2：安装mips32el交叉编译工具链和依赖
+      - name: Install cross-compiler and dependencies
         run: |
+          # 更新软件源
           sudo apt update -y
-          sudo apt install -y gcc-mipsel-linux-gnu git
+          # 安装mips32el交叉编译工具链（核心）
+          sudo apt install -y gcc-mipsel-linux-gnu g++-mipsel-linux-gnu
+          # 安装编译libretro核心所需的基础依赖
+          sudo apt install -y make git build-essential libsdl2-dev
 
-      - name: Clone QuickNES Core (with directory check)
+      # 步骤3：拉取libretro核心源码（以fbneo为例，可替换为其他核心）
+      - name: Clone libretro core source code
         run: |
-          # 克隆仓库并查看完整目录结构（调试关键）
-          git clone --depth=1 https://github.com/libretro/QuickNES_Core.git
-          echo "=== QuickNES_Core 目录结构 ==="
-          tree -L 2 QuickNES_Core/  # 显示2级目录，直观看到src/inc目录
-          echo "=== 所有C文件位置 ==="
-          find QuickNES_Core/ -name "*.c"  # 列出所有.c文件的路径
+          # 克隆fbneo核心源码（其他核心可替换此仓库地址）
+          git clone https://github.com/libretro/FBNeo.git libretro-fbneo
+          cd libretro-fbneo
+          # 进入libretro编译目录（大部分核心都有这个目录）
+          cd src/burner/libretro
 
-      - name: Compile QuickNES Core for mips32el (fixed path)
+      # 步骤4：交叉编译mips32el架构的libretro核心
+      - name: Cross compile for mips32el
         run: |
-          cd QuickNES_Core
-          # 编译命令修正：
-          # 1. src/*.c：匹配src目录下的所有核心源码
-          # 2. libretro.c：匹配根目录的libretro接口文件
-          # 3. -Iinc：指定头文件目录（必须，否则找不到头文件）
-          # 4. 保留mips32el核心参数：-mips32 -EL
-          mipsel-linux-gnu-gcc -mips32 -EL -O2 -fPIC -shared \
-            src/*.c libretro.c -Iinc -o quicknes_libretro.so -lm -Wall
-          
-          # 验证编译结果
-          echo "=== 编译产物信息 ==="
-          ls -la quicknes_libretro.so  # 确认文件生成
-          file quicknes_libretro.so    # 确认架构是mips32小端
+          cd libretro-fbneo/src/burner/libretro
+          # 设置交叉编译工具链前缀
+          export CC=mipsel-linux-gnu-gcc
+          export CXX=mipsel-linux-gnu-g++
+          # 编译：指定架构为mips32，小端，优化等级O2，生成.so文件
+          make -j$(nproc) \
+            platform=libretro \
+            ARCH=mips \
+            CPU=mips32 \
+            ENDIANNESS=little \
+            CFLAGS="-mips32 -EL -O2" \
+            CXXFLAGS="-mips32 -EL -O2" \
+            LDFLAGS="-mips32 -EL"
+          # 验证编译产物的架构（可选，用于确认是否为mips32el）
+          file fbneo_libretro.so
 
-      - name: Upload compiled core
+      # 步骤5：上传编译产物（方便下载）
+      - name: Upload build artifact
         uses: actions/upload-artifact@v4
         with:
-          name: quicknes-libretro-mips32el
-          path: QuickNES_Core/quicknes_libretro.so
-          retention-days: 30
+          # 产物名称，下载时会显示
+          name: fbneo-libretro-mips32el
+          # 编译产物的路径
+          path: libretro-fbneo/src/burner/libretro/fbneo_libretro.so
