@@ -27,30 +27,30 @@ jobs:
           mkdir -p ~/toolchain
           wget -q https://github.com/game-de-it/GKD_pixel/releases/download/GKDpixel-toolchain-v1/mipsel-gcw0-linux-uclibc_sdk-buildroot.tar.gz -O ~/toolchain/toolchain.tar.gz
           tar -xf ~/toolchain/toolchain.tar.gz -C ~/toolchain --strip-components=1
-          # 验证工具链是否解压成功
+          # 验证工具链
           if [ ! -f ~/toolchain/bin/mipsel-gcw0-linux-uclibc-gcc ]; then
-            echo "Toolchain download/extract failed!"
+            echo "❌ Toolchain download failed!"
             exit 1
           fi
+          echo "✅ Toolchain extracted successfully"
 
       - name: Configure cross-compile environment
         run: |
-          # 添加工具链到系统PATH
+          # 添加工具链到PATH
           echo "$HOME/toolchain/bin" >> $GITHUB_PATH
-          # 定义交叉编译核心变量
+          # 定义编译变量（核心）
           echo "CROSS=mipsel-gcw0-linux-uclibc-" >> $GITHUB_ENV
-          # 适配mips架构的编译参数（GKD pixel专用）
-          echo "CFLAGS=-mips32r2 -mtune=mips32r2 -mhard-float -ffast-math -O2 -fPIC" >> $GITHUB_ENV
-          echo "CXXFLAGS=-mips32r2 -mtune=mips32r2 -mhard-float -ffast-math -O2 -fPIC" >> $GITHUB_ENV
-          # 链接参数：显式链接必要系统库
-          echo "LDFLAGS=-L$HOME/toolchain/lib -lm -lpthread -ldl" >> $GITHUB_ENV
+          # 关键：添加-I参数，指定config.h所在的根目录
+          echo "CFLAGS=-mips32r2 -mtune=mips32r2 -mhard-float -ffast-math -O2 -fPIC -I$HOME/pcsx_rearmed" >> $GITHUB_ENV
+          echo "CXXFLAGS=-mips32r2 -mtune=mips32r2 -mhard-float -ffast-math -O2 -fPIC -I$HOME/pcsx_rearmed" >> $GITHUB_ENV
+          echo "LDFLAGS=-L$HOME/toolchain/lib -lm -lpthread -ldl -fPIC -shared" >> $GITHUB_ENV
 
       - name: Clone pcsx_rearmed source code
         run: |
           git clone --depth 1 https://github.com/libretro/pcsx_rearmed.git ~/pcsx_rearmed
           cd ~/pcsx_rearmed
-          # ========== 关键修复：手动生成config.h，解决缺失问题 ==========
-          cat > config.h << EOF
+          # ========== 1. 生成config.h到根目录 ==========
+          cat > config.h << 'EOF'
           #define PACKAGE_VERSION "1.0"
           #define HAVE_STDINT_H 1
           #define HAVE_INTTYPES_H 1
@@ -62,12 +62,21 @@ jobs:
           #define __LIBRETRO__ 1
           #undef USE_SDL
           #undef USE_ALSA
+          #undef USE_PULSEAUDIO
+          #define ARCH_MIPS 1
           EOF
+          # ========== 2. 验证config.h是否生成成功 ==========
+          if [ ! -f config.h ]; then
+            echo "❌ Failed to create config.h"
+            exit 1
+          fi
+          echo "✅ config.h created successfully:"
+          cat config.h # 打印内容，方便调试
 
       - name: Build pcsx_rearmed libretro core
         run: |
           cd ~/pcsx_rearmed
-          # 直接使用libretro专属Makefile编译，跳过错误的configure步骤
+          # 编译命令：明确指定所有工具和参数
           make -f Makefile.libretro \
             CC=${{ env.CROSS }}gcc \
             CXX=${{ env.CROSS }}g++ \
@@ -79,11 +88,13 @@ jobs:
             PLATFORM=unix \
             ARCH=mips \
             -j$(nproc)
-          # 验证编译产物是否生成
+          # 验证产物
           if [ -f pcsx_rearmed_libretro.so ]; then
-            echo "Build success! File size: $(du -h pcsx_rearmed_libretro.so)"
+            echo "✅ Build success! File info:"
+            ls -lh pcsx_rearmed_libretro.so
+            file pcsx_rearmed_libretro.so # 验证架构是否正确
           else
-            echo "Build failed! No core file generated."
+            echo "❌ Build failed! No core file found."
             exit 1
           fi
 
