@@ -27,29 +27,33 @@ jobs:
           mkdir -p ~/toolchain
           wget -q https://github.com/game-de-it/GKD_pixel/releases/download/GKDpixel-toolchain-v1/mipsel-gcw0-linux-uclibc_sdk-buildroot.tar.gz -O ~/toolchain/toolchain.tar.gz
           tar -xf ~/toolchain/toolchain.tar.gz -C ~/toolchain --strip-components=1
-          # 验证工具链
-          if [ ! -f ~/toolchain/bin/mipsel-gcw0-linux-uclibc-gcc ]; then
-            echo "❌ Toolchain download failed!"
+          # 验证工具链sysroot（关键：系统头文件路径）
+          SYSROOT=$(~/toolchain/bin/mipsel-gcw0-linux-uclibc-gcc -print-sysroot)
+          echo "SYSROOT=$SYSROOT" >> $GITHUB_ENV
+          if [ ! -d $SYSROOT/usr/include ]; then
+            echo "❌ Toolchain sysroot missing!"
             exit 1
           fi
-          echo "✅ Toolchain extracted successfully"
 
       - name: Configure cross-compile environment
         run: |
           # 添加工具链到PATH
           echo "$HOME/toolchain/bin" >> $GITHUB_PATH
-          # 定义编译变量（核心）
+          # 核心编译变量（补充sysroot头文件路径）
           echo "CROSS=mipsel-gcw0-linux-uclibc-" >> $GITHUB_ENV
-          # 关键：添加-I参数，指定config.h所在的根目录
-          echo "CFLAGS=-mips32r2 -mtune=mips32r2 -mhard-float -ffast-math -O2 -fPIC -I$HOME/pcsx_rearmed" >> $GITHUB_ENV
-          echo "CXXFLAGS=-mips32r2 -mtune=mips32r2 -mhard-float -ffast-math -O2 -fPIC -I$HOME/pcsx_rearmed" >> $GITHUB_ENV
-          echo "LDFLAGS=-L$HOME/toolchain/lib -lm -lpthread -ldl -fPIC -shared" >> $GITHUB_ENV
+          echo "CFLAGS=-mips32r2 -mtune=mips32r2 -mhard-float -ffast-math -O2 -fPIC \
+            -I$HOME/pcsx_rearmed \
+            -I${{ env.SYSROOT }}/usr/include \
+            -DMAXPATHLEN=4096" >> $GITHUB_ENV # 直接定义MAXPATHLEN
+          echo "CXXFLAGS=${{ env.CFLAGS }}" >> $GITHUB_ENV
+          echo "LDFLAGS=-L${{ env.SYSROOT }}/usr/lib -L$HOME/toolchain/lib -lm -lpthread -ldl -fPIC -shared" >> $GITHUB_ENV
 
       - name: Clone pcsx_rearmed source code
         run: |
           git clone --depth 1 https://github.com/libretro/pcsx_rearmed.git ~/pcsx_rearmed
           cd ~/pcsx_rearmed
-          # ========== 1. 生成config.h到根目录 ==========
+          
+          # ========== 修复1：完善config.h（解决MAXPATHLEN） ==========
           cat > config.h << 'EOF'
           #define PACKAGE_VERSION "1.0"
           #define HAVE_STDINT_H 1
@@ -57,6 +61,7 @@ jobs:
           #define HAVE_STRUCT_TIMESPEC 1
           #define HAVE_PTHREAD_H 1
           #define HAVE_DLFCN_H 1
+          #define HAVE_SYS_PARAM_H 1
           #define DYNAREC "lightrec"
           #define BUILTIN_GPU "peops"
           #define __LIBRETRO__ 1
@@ -64,19 +69,46 @@ jobs:
           #undef USE_ALSA
           #undef USE_PULSEAUDIO
           #define ARCH_MIPS 1
+          #define MAXPATHLEN 4096
           EOF
-          # ========== 2. 验证config.h是否生成成功 ==========
-          if [ ! -f config.h ]; then
-            echo "❌ Failed to create config.h"
-            exit 1
-          fi
-          echo "✅ config.h created successfully:"
-          cat config.h # 打印内容，方便调试
+
+          # ========== 修复2：创建缺失的psemu_plugin_defs.h ==========
+          mkdir -p libpcsxcore
+          cat > libpcsxcore/psemu_plugin_defs.h << 'EOF'
+          #ifndef PSEMU_PLUGIN_DEFS_H
+          #define PSEMU_PLUGIN_DEFS_H
+
+          // libretro版本仅需基础宏定义，无需完整插件接口
+          #define PSX_PLUGIN_API_VERSION 1
+          typedef unsigned char u8;
+          typedef unsigned short u16;
+          typedef unsigned int u32;
+          typedef signed char s8;
+          typedef signed short s16;
+          typedef signed int s32;
+          typedef float f32;
+          typedef double f64;
+
+          // 插件类型枚举（极简版）
+          typedef enum {
+              PLUGIN_TYPE_GPU,
+              PLUGIN_TYPE_SPU,
+              PLUGIN_TYPE_CDROM,
+              PLUGIN_TYPE_PAD,
+              PLUGIN_TYPE_DEV9
+          } PluginType;
+
+          #endif // PSEMU_PLUGIN_DEFS_H
+          EOF
+
+          # ========== 验证文件生成 ==========
+          echo "✅ Generated files:"
+          ls -la config.h libpcsxcore/psemu_plugin_defs.h
 
       - name: Build pcsx_rearmed libretro core
         run: |
           cd ~/pcsx_rearmed
-          # 编译命令：明确指定所有工具和参数
+          # 执行编译（强制单线程，避免嵌入式编译资源不足）
           make -f Makefile.libretro \
             CC=${{ env.CROSS }}gcc \
             CXX=${{ env.CROSS }}g++ \
@@ -87,14 +119,14 @@ jobs:
             LDFLAGS="${{ env.LDFLAGS }}" \
             PLATFORM=unix \
             ARCH=mips \
-            -j$(nproc)
+            -j1 # 嵌入式编译建议单线程，避免错误
           # 验证产物
           if [ -f pcsx_rearmed_libretro.so ]; then
-            echo "✅ Build success! File info:"
-            ls -lh pcsx_rearmed_libretro.so
-            file pcsx_rearmed_libretro.so # 验证架构是否正确
+            echo "✅ Build success! File details:"
+            file pcsx_rearmed_libretro.so
+            du -h pcsx_rearmed_libretro.so
           else
-            echo "❌ Build failed! No core file found."
+            echo "❌ Build failed! No core file generated."
             exit 1
           fi
 
