@@ -39,8 +39,7 @@ jobs:
         run: |
           # 添加工具链到PATH
           echo "$HOME/toolchain/bin" >> $GITHUB_PATH
-          # 核心编译变量（修正CXXFLAGS为空问题）
-          echo "CROSS=mipsel-gcw0-linux-uclibc-" >> $GITHUB_ENV
+          # 统一C/C++编译参数
           COMMON_FLAGS="-mips32r2 -mtune=mips32r2 -mhard-float -ffast-math -O2 -fPIC \
             -I$HOME/pcsx_rearmed \
             -I$HOME/pcsx_rearmed/libpcsxcore \
@@ -49,15 +48,15 @@ jobs:
             -DCALLBACK= \
             -D__unix__=1"
           echo "CFLAGS=$COMMON_FLAGS" >> $GITHUB_ENV
-          echo "CXXFLAGS=$COMMON_FLAGS" >> $GITHUB_ENV # 修正：CXXFLAGS不再为空
+          echo "CXXFLAGS=$COMMON_FLAGS" >> $GITHUB_ENV
           echo "LDFLAGS=-L${{ env.SYSROOT }}/usr/lib -L$HOME/toolchain/lib -lm -lpthread -ldl -fPIC -shared" >> $GITHUB_ENV
 
-      - name: Clone pcsx_rearmed source code and fix all dependencies
+      - name: Clone pcsx_rearmed source code and fix all struct issues
         run: |
           git clone --depth 1 https://github.com/libretro/pcsx_rearmed.git ~/pcsx_rearmed
           cd ~/pcsx_rearmed
           
-          # ========== 修复1：精简config.h（依赖系统stdint.h） ==========
+          # ========== 修复1：精简config.h ==========
           cat > config.h << 'EOF'
           #define PACKAGE_VERSION "1.0"
           #define HAVE_STDINT_H 1
@@ -77,7 +76,7 @@ jobs:
           #define CALLBACK /* Linux下调用约定为空 */
           EOF
 
-          # ========== 修复2：极简版psemu_plugin_defs.h ==========
+          # ========== 修复2：修正psemu_plugin_defs.h（匹配xa_decode结构体） ==========
           cat > libpcsxcore/psemu_plugin_defs.h << 'EOF'
           #ifndef PSEMU_PLUGIN_DEFS_H
           #define PSEMU_PLUGIN_DEFS_H
@@ -91,10 +90,16 @@ jobs:
               int dummy;
           };
 
+          // 修正：匹配decode_xa.h中的struct xa_decode定义（补充nsamples成员）
+          typedef struct xa_decode {
+              int nsamples; // 源码中实际访问的成员
+              int dummy;    // 其他字段用dummy填充
+          } xa_decode_t;
+
           // 仅声明缺失的结构体
           typedef struct {
               int dummy;
-          } xa_decode_t, PadDataS;
+          } PadDataS;
 
           // 仅声明缺失的函数原型
           void CALLBACK SPUirq(int cycles_after);
@@ -108,24 +113,18 @@ jobs:
           # ========== 修复3：给cdriso.c添加<stdio.h> ==========
           sed -i '1i #include <stdio.h>' libpcsxcore/cdriso.c
 
-          # ========== 修复4：创建空的arm_features.h（解决MIPS架构下ARM头文件缺失） ==========
+          # ========== 修复4：创建空的arm_features.h ==========
           touch libpcsxcore/arm_features.h
-          # 验证文件创建
-          if [ -f libpcsxcore/arm_features.h ]; then
-            echo "✅ arm_features.h created successfully"
-          else
-            echo "❌ Failed to create arm_features.h"
-            exit 1
-          fi
 
-          # ========== 验证所有修复文件 ==========
-          echo "✅ All fixed files:"
-          ls -la config.h libpcsxcore/psemu_plugin_defs.h libpcsxcore/arm_features.h
+          # ========== 验证修复 ==========
+          echo "✅ All fix files created:"
+          grep -c "nsamples" libpcsxcore/psemu_plugin_defs.h
+          grep -c "struct xa_decode" libpcsxcore/psemu_plugin_defs.h
 
       - name: Build pcsx_rearmed libretro core
         run: |
           cd ~/pcsx_rearmed
-          # 单线程编译，确保MIPS工具链稳定
+          # 单线程编译
           make -f Makefile.libretro \
             CC=${{ env.CROSS }}gcc \
             CXX=${{ env.CROSS }}g++ \
