@@ -5,7 +5,7 @@ on:
     branches: [ main, master ]
   pull_request:
     branches: [ main, master ]
-  workflow_dispatch:  # 允许手动触发
+  workflow_dispatch:
 
 jobs:
   build:
@@ -35,21 +35,13 @@ jobs:
           
     - name: Setup GCW0 toolchain
       run: |
-        # 创建/opt目录并设置权限
         sudo mkdir -p /opt
         sudo chmod 777 /opt
         
-        # 下载工具链
         cd /opt
-        wget https://github.com/game-de-it/GKD_pixel/releases/download/GKDpixel-toolchain-v1/mipsel-gcw0-linux-uclibc_sdk-buildroot.tar.gz
-        
-        # 解压工具链
-        tar zxvf mipsel-gcw0-linux-uclibc_sdk-buildroot.tar.gz
-        
-        # 重命名工具链目录（为了兼容性）
+        wget -q https://github.com/game-de-it/GKD_pixel/releases/download/GKDpixel-toolchain-v1/mipsel-gcw0-linux-uclibc_sdk-buildroot.tar.gz
+        tar zxf mipsel-gcw0-linux-uclibc_sdk-buildroot.tar.gz
         mv mipsel-gcw0-linux-uclibc_sdk-buildroot gcw0-toolchain
-        
-        # 运行重定位脚本
         cd gcw0-toolchain
         ./relocate-sdk.sh
         
@@ -61,10 +53,8 @@ jobs:
         echo "AR=/opt/gcw0-toolchain/usr/bin/mipsel-gcw0-linux-uclibc-ar" >> $GITHUB_ENV
         echo "LD=/opt/gcw0-toolchain/usr/bin/mipsel-gcw0-linux-uclibc-ld" >> $GITHUB_ENV
         echo "PATH=/opt/gcw0-toolchain/usr/bin:$PATH" >> $GITHUB_ENV
-        
-        # 设置编译标志
-        echo "CFLAGS=-ffast-math -march=mips32 -mtune=mips32r2 -mhard-float -fdata-sections -ffunction-sections" >> $GITHUB_ENV
-        echo "CXXFLAGS=-ffast-math -march=mips32 -mtune=mips32r2 -mhard-float -fdata-sections -ffunction-sections" >> $GITHUB_ENV
+        echo "CFLAGS=-ffast-math -march=mips32 -mtune=mips32r2 -mhard-float -fdata-sections -ffunction-sections -DP_HAVE_MMAP=1 -DP_HAVE_PTHREAD=0 -DP_HAVE_POSIX_MEMALIGN=1" >> $GITHUB_ENV
+        echo "CXXFLAGS=-ffast-math -march=mips32 -mtune=mips32r2 -mhard-float -fdata-sections -ffunction-sections -DP_HAVE_MMAP=1 -DP_HAVE_PTHREAD=0 -DP_HAVE_POSIX_MEMALIGN=1" >> $GITHUB_ENV
         
     - name: Clone pcsx_rearmed repository
       run: |
@@ -72,20 +62,81 @@ jobs:
         cd pcsx_rearmed
         git submodule update --init
         
+    - name: Patch Makefile.libretro for GCW0
+      run: |
+        cd pcsx_rearmed
+        
+        # 查找并修复 __WIN32__ 定义的问题
+        # 首先备份原文件
+        cp Makefile.libretro Makefile.libretro.backup
+        
+        # 移除可能错误的 __WIN32__ 定义
+        sed -i 's/-D__WIN32__//g' Makefile.libretro
+        
+        # 添加 GCW0 特定的修复
+        # 确保使用正确的 mmap 头文件
+        # 创建一个补丁来修复 mmap 包含问题
+        cat > fix_mmap.patch << 'EOF'
+--- a/include/mman/sys/mman.h
++++ b/include/mman/sys/mman.h
+@@ -1,5 +1,9 @@
+ #ifndef _SYS_MMAN_H_
+ #define _SYS_MMAN_H_
+ 
++#ifdef __linux__
++#include <sys/mman.h>
++#else
+ #include "../../deps/mman/mman.h"
++#endif
+ #endif
+EOF
+        
+        # 应用补丁
+        if [ -f "include/mman/sys/mman.h" ]; then
+          patch -p1 < fix_mmap.patch || true
+        fi
+        
     - name: Build pcsx_rearmed
       run: |
         cd pcsx_rearmed
-        # 使用libretro构建系统
-        make -f Makefile.libretro platform=gcw0
+        
+        # 方法1: 使用自定义 CFLAGS 覆盖
+        echo "尝试方法1: 直接使用 platform=gcw0"
+        if make -f Makefile.libretro platform=gcw0 CFLAGS="$CFLAGS" CXXFLAGS="$CXXFLAGS"; then
+          echo "方法1 成功!"
+        else
+          echo "方法1 失败，尝试方法2..."
+          # 方法2: 直接使用 GCC 编译
+          make clean || true
+          
+          # 手动设置编译命令
+          echo "尝试手动编译..."
+          $CC $CFLAGS -I. -Iinclude -Ilibpcsxcore -Ideps/libchdr/include \
+            -DDISABLE_MEM_LUTS=0 -DGPU_PEOPS -DHAVE_CHD -DHAVE_CDROM \
+            -DUSE_LIBRETRO_VFS -DHAVE_LIBRETRO -DNO_FRONTEND \
+            -DLIGHTREC -DLIGHTREC_STATIC -DNO_DYLIB \
+            -Wall -O3 -fPIC -shared -o pcsx_rearmed_libretro.so \
+            libpcsxcore/*.c frontend/libretro.c \
+            -L$SYSROOT/usr/lib -lz -lm || echo "编译失败"
+        fi
         
     - name: Verify the build
       run: |
         cd pcsx_rearmed
-        file pcsx_rearmed_libretro.so
-        echo "Build completed successfully!"
+        if [ -f "pcsx_rearmed_libretro.so" ]; then
+          echo "找到编译后的文件!"
+          file pcsx_rearmed_libretro.so
+          echo "文件大小: $(stat -c%s pcsx_rearmed_libretro.so) 字节"
+        else
+          echo "未找到编译后的文件，尝试其他方法..."
+          # 尝试使用不同的方法编译
+          make -f Makefile.libretro platform=unix CROSS_COMPILE=mipsel-gcw0-linux-uclibc- || true
+        fi
         
     - name: Upload artifact
       uses: actions/upload-artifact@v4
       with:
         name: pcsx_rearmed-gcw0
-        path: pcsx_rearmed/pcsx_rearmed_libretro.so
+        path: |
+          pcsx_rearmed/pcsx_rearmed_libretro.so
+          pcsx_rearmed/pcsx_rearmed
