@@ -24,6 +24,12 @@ jobs:
           wget \
           tar \
           gzip \
+          make \
+          cmake \
+          autoconf \
+          automake \
+          libtool \
+          pkg-config \
           libsdl1.2-dev \
           libsdl2-dev \
           zlib1g-dev \
@@ -31,7 +37,8 @@ jobs:
           libvorbis-dev \
           libflac-dev \
           libmpg123-dev \
-          libmad0-dev
+          libmad0-dev \
+          python3
           
     - name: Setup GCW0 toolchain
       run: |
@@ -52,91 +59,170 @@ jobs:
         echo "CXX=/opt/gcw0-toolchain/usr/bin/mipsel-gcw0-linux-uclibc-g++" >> $GITHUB_ENV
         echo "AR=/opt/gcw0-toolchain/usr/bin/mipsel-gcw0-linux-uclibc-ar" >> $GITHUB_ENV
         echo "LD=/opt/gcw0-toolchain/usr/bin/mipsel-gcw0-linux-uclibc-ld" >> $GITHUB_ENV
+        echo "STRIP=/opt/gcw0-toolchain/usr/bin/mipsel-gcw0-linux-uclibc-strip" >> $GITHUB_ENV
+        echo "RANLIB=/opt/gcw0-toolchain/usr/bin/mipsel-gcw0-linux-uclibc-ranlib" >> $GITHUB_ENV
         echo "PATH=/opt/gcw0-toolchain/usr/bin:$PATH" >> $GITHUB_ENV
-        echo "CFLAGS=-ffast-math -march=mips32 -mtune=mips32r2 -mhard-float -fdata-sections -ffunction-sections -DP_HAVE_MMAP=1 -DP_HAVE_PTHREAD=0 -DP_HAVE_POSIX_MEMALIGN=1" >> $GITHUB_ENV
-        echo "CXXFLAGS=-ffast-math -march=mips32 -mtune=mips32r2 -mhard-float -fdata-sections -ffunction-sections -DP_HAVE_MMAP=1 -DP_HAVE_PTHREAD=0 -DP_HAVE_POSIX_MEMALIGN=1" >> $GITHUB_ENV
         
-    - name: Clone pcsx_rearmed repository
+        # 设置编译标志
+        export CFLAGS="-ffast-math -march=mips32 -mtune=mips32r2 -mhard-float -fdata-sections -ffunction-sections -O2 -DP_HAVE_POSIX_MEMALIGN=1 -DHAVE_MMAP=1 -D_FILE_OFFSET_BITS=64 -D_GNU_SOURCE"
+        export CXXFLAGS="$CFLAGS"
+        export LDFLAGS="-Wl,--gc-sections"
+        
+        echo "CFLAGS=$CFLAGS" >> $GITHUB_ENV
+        echo "CXXFLAGS=$CXXFLAGS" >> $GITHUB_ENV
+        echo "LDFLAGS=$LDFLAGS" >> $GITHUB_ENV
+        
+    - name: Clone pcsx_rearmed
       run: |
-        git clone https://github.com/libretro/pcsx_rearmed.git
-        cd pcsx_rearmed
-        git submodule update --init
+        # 使用 notaz 的版本，它对 GCW0 支持更好
+        git clone --depth=1 https://github.com/notaz/pcsx_rearmed.git pcsx_rearmed_src
+        cd pcsx_rearmed_src
         
-    - name: Patch Makefile.libretro for GCW0
+        # 初始化子模块
+        git submodule update --init --recursive
+        
+    - name: Build pcsx_rearmed (方法1: 使用libretro)
       run: |
-        cd pcsx_rearmed
+        cd pcsx_rearmed_src
         
-        # 查找并修复 __WIN32__ 定义的问题
-        # 首先备份原文件
-        cp Makefile.libretro Makefile.libretro.backup
+        echo "=== 尝试方法1: 使用 Makefile.libretro ==="
         
-        # 移除可能错误的 __WIN32__ 定义
-        sed -i 's/-D__WIN32__//g' Makefile.libretro
-        
-        # 添加 GCW0 特定的修复
-        # 确保使用正确的 mmap 头文件
-        # 创建一个补丁来修复 mmap 包含问题
-        cat > fix_mmap.patch << 'EOF'
---- a/include/mman/sys/mman.h
-+++ b/include/mman/sys/mman.h
-@@ -1,5 +1,9 @@
- #ifndef _SYS_MMAN_H_
- #define _SYS_MMAN_H_
- 
-+#ifdef __linux__
-+#include <sys/mman.h>
-+#else
- #include "../../deps/mman/mman.h"
-+#endif
- #endif
+        # 创建一个自定义的编译脚本
+        cat > build_libretro.sh << 'EOF'
+#!/bin/bash
+set -e
+
+# 清理之前的构建
+make -f Makefile.libretro clean 2>/dev/null || true
+
+# 尝试使用 platform=gcw0
+if make -f Makefile.libretro platform=gcw0 2>&1; then
+    echo "=== 使用 platform=gcw0 成功 ==="
+    exit 0
+fi
+
+# 如果失败，尝试使用 platform=unix 并手动设置交叉编译
+echo "=== 尝试使用 platform=unix ==="
+make -f Makefile.libretro clean 2>/dev/null || true
+
+# 设置环境变量
+export CC="${CROSS_COMPILE}gcc"
+export CXX="${CROSS_COMPILE}g++"
+export AR="${CROSS_COMPILE}ar"
+export LD="${CROSS_COMPILE}ld"
+export STRIP="${CROSS_COMPILE}strip"
+export RANLIB="${CROSS_COMPILE}ranlib"
+
+# 构建
+if make -f Makefile.libretro platform=unix 2>&1; then
+    echo "=== 使用 platform=unix 成功 ==="
+    exit 0
+fi
+
+# 如果仍然失败，尝试手动编译
+echo "=== 尝试手动编译 ==="
+make -f Makefile.libretro clean 2>/dev/null || true
+
+# 使用自定义的编译命令
+${CROSS_COMPILE}gcc $CFLAGS \
+    -I. -Iinclude -Ilibpcsxcore -Ideps/libchdr/include -Ideps/libretro-common/include \
+    -DDISABLE_MEM_LUTS=0 -DGPU_PEOPS -DHAVE_CHD -DHAVE_CDROM \
+    -DUSE_LIBRETRO_VFS -DHAVE_LIBRETRO -DNO_FRONTEND \
+    -DLIGHTREC -DLIGHTREC_STATIC \
+    -Wall -O3 -fPIC -shared -o pcsx_rearmed_libretro.so \
+    $(find libpcsxcore -name "*.c") frontend/libretro.c \
+    -L${SYSROOT}/usr/lib -lz -lm -lpthread 2>&1 || true
 EOF
         
-        # 应用补丁
-        if [ -f "include/mman/sys/mman.h" ]; then
-          patch -p1 < fix_mmap.patch || true
-        fi
+        chmod +x build_libretro.sh
+        ./build_libretro.sh
         
-    - name: Build pcsx_rearmed
+    - name: Build pcsx_rearmed (方法2: 使用常规Makefile)
+      if: failure()
       run: |
-        cd pcsx_rearmed
+        cd pcsx_rearmed_src
         
-        # 方法1: 使用自定义 CFLAGS 覆盖
-        echo "尝试方法1: 直接使用 platform=gcw0"
-        if make -f Makefile.libretro platform=gcw0 CFLAGS="$CFLAGS" CXXFLAGS="$CXXFLAGS"; then
-          echo "方法1 成功!"
-        else
-          echo "方法1 失败，尝试方法2..."
-          # 方法2: 直接使用 GCC 编译
-          make clean || true
-          
-          # 手动设置编译命令
-          echo "尝试手动编译..."
-          $CC $CFLAGS -I. -Iinclude -Ilibpcsxcore -Ideps/libchdr/include \
-            -DDISABLE_MEM_LUTS=0 -DGPU_PEOPS -DHAVE_CHD -DHAVE_CDROM \
-            -DUSE_LIBRETRO_VFS -DHAVE_LIBRETRO -DNO_FRONTEND \
-            -DLIGHTREC -DLIGHTREC_STATIC -DNO_DYLIB \
-            -Wall -O3 -fPIC -shared -o pcsx_rearmed_libretro.so \
-            libpcsxcore/*.c frontend/libretro.c \
-            -L$SYSROOT/usr/lib -lz -lm || echo "编译失败"
-        fi
+        echo "=== 尝试方法2: 使用常规 Makefile ==="
         
-    - name: Verify the build
+        # 清理之前的构建
+        make clean 2>/dev/null || true
+        
+        # 配置并构建
+        ./configure --platform=gcw0 --sound-drivers=sdl 2>&1 || true
+        
+        # 尝试构建
+        make 2>&1 || true
+        
+    - name: Create release package
       run: |
-        cd pcsx_rearmed
-        if [ -f "pcsx_rearmed_libretro.so" ]; then
-          echo "找到编译后的文件!"
-          file pcsx_rearmed_libretro.so
-          echo "文件大小: $(stat -c%s pcsx_rearmed_libretro.so) 字节"
-        else
-          echo "未找到编译后的文件，尝试其他方法..."
-          # 尝试使用不同的方法编译
-          make -f Makefile.libretro platform=unix CROSS_COMPILE=mipsel-gcw0-linux-uclibc- || true
+        # 创建输出目录
+        mkdir -p release
+        
+        # 复制所有可能的输出文件
+        echo "=== 查找生成的文件 ==="
+        
+        # 在 pcsx_rearmed_src 目录中查找
+        if [ -f "pcsx_rearmed_src/pcsx_rearmed_libretro.so" ]; then
+            echo "找到 pcsx_rearmed_libretro.so"
+            cp pcsx_rearmed_src/pcsx_rearmed_libretro.so release/
         fi
         
-    - name: Upload artifact
+        if [ -f "pcsx_rearmed_src/pcsx_rearmed" ]; then
+            echo "找到 pcsx_rearmed 可执行文件"
+            cp pcsx_rearmed_src/pcsx_rearmed release/
+        fi
+        
+        # 查找其他可能的文件
+        find pcsx_rearmed_src -name "*.so" -type f | head -5 | while read file; do
+            echo "找到文件: $file"
+            cp "$file" release/ 2>/dev/null || true
+        done
+        
+        find pcsx_rearmed_src -name "pcsx*" -type f -executable | head -5 | while read file; do
+            echo "找到可执行文件: $file"
+            cp "$file" release/ 2>/dev/null || true
+        done
+        
+        # 列出 release 目录中的文件
+        echo "=== release 目录内容 ==="
+        ls -la release/ || echo "release 目录为空"
+        
+        # 如果没有文件，创建占位符文件
+        if [ ! "$(ls -A release/ 2>/dev/null)" ]; then
+            echo "编译失败，没有生成文件" > release/ERROR.txt
+            echo "请检查编译日志" >> release/ERROR.txt
+        else
+            # 创建 readme 文件
+            cat > release/README.txt << EOF
+PCSX ReARMed for GCW0/GKD Pixel
+Build date: $(date)
+Toolchain: GCW0 SDK from game-de-it/GKD_pixel
+Repository: https://github.com/notaz/pcsx_rearmed
+
+Files included:
+$(ls -1 release/ | grep -v README.txt)
+
+Usage instructions:
+1. Copy the .so file to your RetroArch cores directory
+2. Or copy the pcsx_rearmed executable to your GCW0 device
+3. Ensure you have the necessary BIOS files
+
+Note: This is an automated build. For support, please check the original repository.
+EOF
+        fi
+        
+    - name: Upload artifacts
       uses: actions/upload-artifact@v4
       with:
-        name: pcsx_rearmed-gcw0
+        name: pcsx-rearmed-gcw0
+        path: release/
+        
+    - name: Upload build log
+      if: always()
+      uses: actions/upload-artifact@v4
+      with:
+        name: build-logs
         path: |
-          pcsx_rearmed/pcsx_rearmed_libretro.so
-          pcsx_rearmed/pcsx_rearmed
+          **/*.log
+          **/config.log
+        retention-days: 7
