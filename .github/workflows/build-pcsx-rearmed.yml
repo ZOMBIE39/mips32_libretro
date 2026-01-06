@@ -26,85 +26,95 @@ jobs:
             wget \
             unzip
 
-      - name: Clone libretro-super and fetch pcsx_rearmed source
+      - name: Clone pcsx_rearmed source directly (skip libretro-super script dependency)
         run: |
-          # 克隆libretro-super仓库（深度设为1加快速度）
-          git clone --depth=1 https://github.com/libretro/libretro-super.git
-          cd libretro-super
-          # 第一步：手动初始化并更新所有子模块（强制重试）
-          git submodule sync --recursive
-          git submodule update --init --recursive --force
-          # 第二步：如果子模块仍未拉取，手动克隆pcsx_rearmed源码（兜底方案）
-          if [ ! -d "libretro-pcsx_rearmed" ]; then
-            echo "子模块拉取失败，手动克隆pcsx_rearmed源码..."
-            git clone https://github.com/libretro/pcsx_rearmed.git libretro-pcsx_rearmed
-          fi
-          # 调试：打印子模块状态和目录结构
-          echo "===== 子模块状态 ====="
-          git submodule status
-          echo "===== libretro-super目录结构 ====="
+          # 直接克隆源码，避免libretro-super的子模块/脚本问题
+          git clone https://github.com/libretro/pcsx_rearmed.git
+          cd pcsx_rearmed
+          # 确保源码完整（拉取所有分支/标签）
+          git fetch --all
+          # 打印源码目录结构，确认Makefile存在
+          echo "===== pcsx_rearmed源码目录结构 ====="
           ls -la
-          echo "===== pcsx_rearmed目录是否存在 ====="
-          if [ -d "libretro-pcsx_rearmed" ]; then
-            echo "✅ libretro-pcsx_rearmed目录存在"
-            ls -la libretro-pcsx_rearmed/
+          echo "===== 确认Makefile是否存在 ====="
+          if [ -f "Makefile" ]; then
+            echo "✅ Makefile存在"
+            # 查看Makefile中关键编译配置
+            grep -E "(CC|LD|mips|DINGUX|SOFTWARE|GPU|GL)" Makefile || true
           else
-            echo "❌ libretro-pcsx_rearmed目录不存在"
+            echo "❌ Makefile不存在"
+            exit 1
           fi
 
       - name: Set cross-compile env for Dingux mips32 (No GPU)
         run: |
-          # 核心修改：添加禁用GPU/OpenGL/GLES的宏定义，强制软件渲染
+          # 核心：无GPU编译环境变量，精简且明确
           echo "CC=mipsel-linux-gnu-gcc" >> $GITHUB_ENV
           echo "CXX=mipsel-linux-gnu-g++" >> $GITHUB_ENV
           echo "AR=mipsel-linux-gnu-ar" >> $GITHUB_ENV
           echo "RANLIB=mipsel-linux-gnu-ranlib" >> $GITHUB_ENV
+          echo "STRIP=mipsel-linux-gnu-strip" >> $GITHUB_ENV
+          # 适配mips32 + 无GPU + Dingux的编译参数
           echo "CFLAGS=-march=mips32 -mabi=32 -mtune=mips32 -O2 -fPIC -DDINGUX=1 \
-            -DNO_GPU=1 -DNO_OPENGL=1 -DNO_GLES=1 -DNO_GLES2=1 -DUSE_SOFTWARE_RENDERER=1" >> $GITHUB_ENV
-          echo "CXXFLAGS=-march=mips32 -mabi=32 -mtune=mips32 -O2 -fPIC -DDINGUX=1 \
-            -DNO_GPU=1 -DNO_OPENGL=1 -DNO_GLES=1 -DNO_GLES2=1 -DUSE_SOFTWARE_RENDERER=1" >> $GITHUB_ENV
-          echo "LDFLAGS=-march=mips32 -mabi=32 -mtune=mips32 -fPIC" >> $GITHUB_ENV
-          # 调试：打印关键环境变量
-          env | grep -E "(CC|CXX|CFLAGS|DINGUX|NO_GPU|SOFTWARE_RENDERER)"
+            -DNO_GPU=1 -DNO_OPENGL=1 -DNO_GLES=1 -DNO_GLES2=1 -DUSE_SOFTWARE_RENDERER=1 \
+            -DLIBRETRO=1 -DNDEBUG" >> $GITHUB_ENV
+          echo "CXXFLAGS=${{ env.CFLAGS }}" >> $GITHUB_ENV
+          echo "LDFLAGS=-march=mips32 -mabi=32 -mtune=mips32 -fPIC -shared -lm" >> $GITHUB_ENV
+          # 打印环境变量确认
+          echo "===== 编译环境变量 ====="
+          env | grep -E "(CC|CXX|CFLAGS|DINGUX|NO_GPU|SOFTWARE)"
 
-      - name: Patch pcsx_rearmed Makefile (Disable GPU features)
+      - name: Manual build pcsx_rearmed (skip libretro-super script)
         run: |
-          cd libretro-super/libretro-pcsx_rearmed
-          # 额外兜底：直接修改Makefile，强制关闭GPU相关编译分支
-          # 1. 注释掉所有GPU/GL相关的编译选项
-          sed -i '/OPENGL/d' Makefile || echo "Makefile中无OPENGL相关行"
-          sed -i '/GLES/d' Makefile || echo "Makefile中无GLES相关行"
-          sed -i '/GPU/d' Makefile || echo "Makefile中无GPU相关行"
-          # 2. 强制启用软件渲染
-          sed -i 's/^#*USE_SOFTWARE_RENDERER=0/USE_SOFTWARE_RENDERER=1/' Makefile || echo "未找到软件渲染开关"
-          # 调试：打印修改后的Makefile关键行
-          echo "===== Makefile中软件渲染相关配置 ====="
-          grep -E "(SOFTWARE_RENDERER|GPU|OPENGL|GLES)" Makefile || echo "无相关配置"
+          cd pcsx_rearmed
+          # 手动清理旧编译产物
+          make clean || echo "无旧产物需要清理"
+          # 核心：手动指定编译参数，直接编译libretro核心
+          echo "===== 开始手动编译 ====="
+          make -j$(nproc) \
+            CC=${{ env.CC }} \
+            CXX=${{ env.CXX }} \
+            AR=${{ env.AR }} \
+            RANLIB=${{ env.RANLIB }} \
+            STRIP=${{ env.STRIP }} \
+            CFLAGS="${{ env.CFLAGS }}" \
+            CXXFLAGS="${{ env.CXXFLAGS }}" \
+            LDFLAGS="${{ env.LDFLAGS }}" \
+            platform=libretro \
+            USE_SOFTWARE_RENDERER=1 \
+            DISABLE_GPU=1 \
+            VERBOSE=1
+          
+          # 详细排查：打印编译日志后，查找所有生成的文件
+          echo "===== 编译后目录文件 ====="
+          ls -la
+          echo "===== 查找.so文件 ====="
+          find . -name "*.so" -type f -ls
+          echo "===== 查找.a/.o文件（确认编译是否有产物） ====="
+          find . -name "*.a" -o -name "*.o" | head -20
 
-      - name: Build pcsx_rearmed for Dingux mips32 (No GPU)
+      - name: Verify build output and copy to fixed path
         run: |
-          cd libretro-super
-          # 先确认源码目录存在再编译
-          if [ ! -d "libretro-pcsx_rearmed" ]; then
-            echo "❌ 源码目录不存在，编译终止"
+          # 确认.so文件存在，否则终止流程
+          if [ -f "pcsx_rearmed/pcsx_rearmed_libretro.so" ]; then
+            echo "✅ 编译成功，找到目标文件"
+            # 复制到固定路径，方便上传
+            mkdir -p ./build_output
+            cp pcsx_rearmed/pcsx_rearmed_libretro.so ./build_output/
+            # 验证文件架构（确认是mips32）
+            file ./build_output/pcsx_rearmed_libretro.so
+          else
+            echo "❌ 编译失败，未找到pcsx_rearmed_libretro.so"
+            # 打印更多排查信息
+            echo "===== 最后尝试查找所有可能的产物 ====="
+            find . -name "*pcsx*libretro*" -type f
             exit 1
           fi
-          # 核心：明确指定仅编译软件渲染版本，禁用GPU加速
-          export FORCE_SOFTWARE_RENDERER=1
-          export DISABLE_GPU=1
-          # 开启详细日志编译
-          VERBOSE=1 ./libretro-build.sh pcsx_rearmed
-          # 调试：查找所有编译生成的.so文件
-          echo "===== 查找所有编译生成的.so文件 ====="
-          find . -name "*.so" -type f -ls
-          ls -la ./libretro-pcsx_rearmed/ || echo "libretro-pcsx_rearmed目录仍不存在"
 
       - name: Upload build artifact
         uses: actions/upload-artifact@v4
         with:
           name: pcsx_rearmed-dingux-mips32-no-gpu
-          path: |
-            libretro-super/libretro-pcsx_rearmed/pcsx_rearmed_libretro.so
-            libretro-super/dist/unix/pcsx_rearmed_libretro.so
+          path: ./build_output/pcsx_rearmed_libretro.so
           retention-days: 30
-          if-no-files-found: warn
+          if-no-files-found: error # 找不到文件直接报错，便于排查
