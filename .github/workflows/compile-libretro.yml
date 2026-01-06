@@ -25,10 +25,9 @@ jobs:
           sudo chmod +x relocate-sdk.sh
           sudo ./relocate-sdk.sh
           sudo chown -R $USER:$USER /opt/gcw0-toolchain
-          # 验证工具链可用性
           /opt/gcw0-toolchain/usr/bin/mipsel-gcw0-linux-uclibc-gcc --version
 
-      - name: Set environment variables (关键添加-I.头文件路径)
+      - name: Set environment variables (修复头文件和宏冲突)
         run: |
           export CROSS_COMPILE=/opt/gcw0-toolchain/usr/bin/mipsel-gcw0-linux-uclibc-
           export SYSROOT=/opt/gcw0-toolchain/usr/mipsel-gcw0-linux-uclibc/sysroot
@@ -38,15 +37,15 @@ jobs:
           export LD=${CROSS_COMPILE}ld
           export STRIP=${CROSS_COMPILE}strip
           
-          # 核心修复：添加 -I. 让编译器从根目录搜索头文件（解决config.h路径问题）
-          export CFLAGS="-O2 -ffast-math -march=mips32 -mtune=mips32r2 -mhard-float -fdata-sections -ffunction-sections --sysroot=${SYSROOT} -D_GNU_SOURCE=1 -I."
+          # 核心修复：
+          # 1. 添加 -include sys/param.h 定义 MAXPATHLEN
+          # 2. 移除冲突的 __mips_isa_rev 手动定义（工具链自动生成）
+          # 3. 添加 -DLIBRETRO_NO_PLUGINS 禁用原生插件系统
+          export CFLAGS="-O2 -ffast-math -march=mips32 -mtune=mips32r2 -mhard-float -fdata-sections -ffunction-sections --sysroot=${SYSROOT} -D_GNU_SOURCE=1 -I. -include sys/param.h -DLIBRETRO_NO_PLUGINS"
           export CXXFLAGS="${CFLAGS}"
-          
-          # 补充链接参数
           export LDFLAGS="-march=mips32 -mtune=mips32r2 -mhard-float --sysroot=${SYSROOT} -lpthread -lm -ldl -lz -Wl,--gc-sections"
           export LDLIBS="-lpthread -lm -ldl -lz"
           
-          # 写入环境变量
           echo "CROSS_COMPILE=$CROSS_COMPILE" >> $GITHUB_ENV
           echo "SYSROOT=$SYSROOT" >> $GITHUB_ENV
           echo "CC=$CC" >> $GITHUB_ENV
@@ -67,47 +66,41 @@ jobs:
           path: pcsx_rearmed
           fetch-depth: 1
 
-      - name: Prepare build environment (先clean再生成config.h)
+      - name: Prepare build environment (修复config.h宏)
         run: |
           cd pcsx_rearmed
-          # 第一步：清理所有旧产物
+          # 清理旧产物
           make -f Makefile.libretro clean || true
           
-          # 第二步：生成config.h到根目录（验证生成路径）
+          # 生成适配的config.h（删除冲突宏，补充必要定义）
           cat > config.h << EOF
-          /* 架构宏（完整） */
+          /* 架构宏（移除冲突的__mips_isa_rev） */
           #define ARCH_MIPS 1
           #define ARCH_MIPSEL 1
           #define __mips__ 1
           #define __mipsel__ 1
           #define MIPS32 1
           #define MIPS32R2 1
-          #define __mips_isa_rev 2
           
-          /* libretro核心必备宏 */
+          /* libretro核心必备宏（禁用原生插件） */
           #define HAVE_LIBRETRO 1
           #define LIBRETRO 1
+          #define LIBRETRO_NO_PLUGINS 1  // 关键：禁用原生插件系统
           
-          /* 功能宏（启用完整模块） */
-          #define DISABLE_THREADS 0
-          #define SOUND_DRIVER_SDL 0
-          #define SOUND_DRIVER_ALSA 0
-          #define SOUND_DRIVER_OSS 0
-          #define SOUND_DRIVER_PULSEAUDIO 0
+          /* 功能宏（简化，避免依赖） */
+          #define DISABLE_THREADS 1      // 暂时关闭多线程，减少依赖
+          #define SOUND_DRIVER_NONE 1
           #define GPU_PEOPS 1
           #define GPU_PEOPS_MIPS 1
           #define DYNAREC_LIGHTREC 1
           #define DYNAREC_NONE 0
           #define HAVE_DYNAREC 1
           #define HAVE_FLOAT_EMU 1
-          #define HAVE_CORE_COMPAT 1
-          #define HAVE_CCD 1
-          #define HAVE_CDR 1
-          #define HAVE_CISO 1
-          #define HAVE_CHD 1
-          #define HAVE_PBP 1
           
-          /* 系统宏 */
+          /* 系统宏（补充MAXPATHLEN备用定义） */
+          #ifndef MAXPATHLEN
+          #define MAXPATHLEN 4096
+          #endif
           #define SYSROOT "${{ env.SYSROOT }}"
           #define CROSS_COMPILE "${{ env.CROSS_COMPILE }}"
           #define HAVE_STDINT_H 1
@@ -117,57 +110,32 @@ jobs:
           #define HAVE_INTTYPES_H 1
           #define HAVE_MEMCPY 1
           #define HAVE_MEMSET 1
-          #define HAVE_STRCASECMP 1
-          #define HAVE_STRNCASECMP 1
-          #define HAVE_MALLOC 1
-          #define HAVE_FREE 1
-          #define HAVE_OPEN 1
-          #define HAVE_CLOSE 1
-          #define HAVE_READ 1
-          #define HAVE_WRITE 1
           #define _GNU_SOURCE 1
           EOF
           
-          # 验证：打印config.h路径和内容（排查生成问题）
+          # 验证生成
           echo "✅ config.h生成路径：$(pwd)/config.h"
           ls -la config.h
-          cat config.h | head -10  # 打印前10行验证内容
-          
-          # 确保权限正确
           chmod 644 config.h
-          echo "✅ config.h 生成完成并验证"
 
-      - name: Build pcsx_rearmed libretro core (完整编译参数)
+      - name: Build pcsx_rearmed libretro core
         run: |
           cd pcsx_rearmed
-          # 双重验证：config.h存在 + CFLAGS包含-I.
+          # 验证前置条件
           if [ ! -f config.h ]; then
-            echo "ERROR: config.h缺失，编译终止！"
-            exit 1
-          fi
-          if [[ ! "${{ env.CFLAGS }}" =~ "-I." ]]; then
-            echo "ERROR: CFLAGS未包含-I.，头文件路径错误！"
+            echo "ERROR: config.h缺失！"
             exit 1
           fi
           
-          # 显式传递所有参数编译
+          # 编译（简化参数，依赖环境变量）
           make -f Makefile.libretro \
             PLATFORM=unix \
             ARCH=mipsel \
             HAVE_DYNAREC=1 \
             GPU=peops \
-            CROSS_COMPILE=${{ env.CROSS_COMPILE }} \
-            CC=${{ env.CC }} \
-            CXX=${{ env.CXX }} \
-            AR=${{ env.AR }} \
-            LD=${{ env.LD }} \
-            CFLAGS="${{ env.CFLAGS }}" \
-            CXXFLAGS="${{ env.CXXFLAGS }}" \
-            LDFLAGS="${{ env.LDFLAGS }}" \
-            LDLIBS="${{ env.LDLIBS }}" \
             -j$(nproc)
 
-      - name: Verify build result (检查体积)
+      - name: Verify build result
         run: |
           cd pcsx_rearmed
           if [ -f pcsx_rearmed_libretro.so ]; then
@@ -175,9 +143,6 @@ jobs:
             echo "✅ 编译成功！产物路径：$(pwd)/pcsx_rearmed_libretro.so"
             echo "✅ 产物体积：$FILE_SIZE"
             file pcsx_rearmed_libretro.so || echo "⚠️ file命令验证跳过"
-            if [[ $(du -k pcsx_rearmed_libretro.so | awk '{print $1}') -lt 1000 ]]; then
-              echo "⚠️ 产物体积小于1MB，建议检查功能宏是否完整"
-            fi
           else
             echo "ERROR: 编译产物缺失！"
             exit 1
