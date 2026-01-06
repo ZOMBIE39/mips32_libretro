@@ -37,8 +37,10 @@ jobs:
           export AR=${CROSS_COMPILE}ar
           export LD=${CROSS_COMPILE}ld
           export STRIP=${CROSS_COMPILE}strip
-          # 关键修复：添加-I. 指定当前目录为包含路径，确保能找到config.h
-          export CFLAGS="-I. -march=mips32r2 -mtune=mips32r2 -mhard-float -mabi=32 -ffast-math -O2 -fPIC -D__mips__=1 -D__mipsel__=1 -DMIPS32=1 -DMIPS_HARD_FLOAT=1"
+          # 关键修复：
+          # 1. 添加-I. -I./libpcsxcore 覆盖所有头文件目录
+          # 2. 预定义MAXPATHLEN避免宏未声明
+          export CFLAGS="-I. -I./libpcsxcore -DMAXPATHLEN=4096 -march=mips32r2 -mtune=mips32r2 -mhard-float -mabi=32 -ffast-math -O2 -fPIC -D__mips__=1 -D__mipsel__=1 -DMIPS32=1 -DMIPS_HARD_FLOAT=1"
           export CXXFLAGS="${CFLAGS}"
           # 补充LDFLAGS：确保链接完整，避免过度裁剪
           export LDFLAGS="-shared -fPIC -Wl,--no-gc-sections -Wl,-z,now -Wl,-z,relro --sysroot=${SYSROOT}"
@@ -62,6 +64,19 @@ jobs:
           path: pcsx_rearmed
           fetch-depth: 1
 
+      - name: Verify critical header files exist
+        run: |
+          cd pcsx_rearmed
+          # 检查核心头文件是否存在
+          if [ ! -f libpcsxcore/psemu_plugin_defs.h ]; then
+            echo "ERROR: psemu_plugin_defs.h 缺失！"
+            # 尝试从源码目录查找并复制
+            find . -name "psemu_plugin_defs.h" -type f
+            # 如果找到则复制到libpcsxcore目录
+            find . -name "psemu_plugin_defs.h" -type f -exec cp {} libpcsxcore/ \;
+          fi
+          ls -lh libpcsxcore/psemu_plugin_defs.h || echo "psemu_plugin_defs.h 仍缺失，继续尝试编译"
+
       - name: Generate complete config.h (补充核心宏定义)
         run: |
           cd pcsx_rearmed
@@ -74,7 +89,11 @@ jobs:
           #define MIPS32 1
           #define MIPS32R2 1
           #define MIPS_HARD_FLOAT 1
-          #define __mips_abi硬浮点 1
+          #define __mips_abi_hard 1
+          
+          // 系统路径宏定义（解决MAXPATHLEN报错）
+          #define MAXPATHLEN 4096
+          #define PATH_MAX 4096
           
           // Libretro核心必需定义
           #define HAVE_LIBRETRO 1
@@ -107,6 +126,10 @@ jobs:
           #define HAVE_ERRNO_H 1
           #define HAVE_SIGNAL_H 1
           #define HAVE_PTHREAD_H 1
+          #define HAVE_SYS_PARAM_H 1  // 启用sys/param.h包含
+          #define HAVE_LIMITS_H 1     // 启用limits.h包含
+          #define HAVE_SYS_STAT_H 1
+          #define HAVE_SYS_MMAN_H 1
           
           // 函数支持
           #define HAVE_MEMCPY 1
@@ -144,7 +167,7 @@ jobs:
           # 打印文件路径和内容，确保生成成功
           echo "✅ config.h 生成成功，路径：$(pwd)/config.h"
           ls -lh config.h
-          cat config.h | head -10
+          cat config.h | head -20
 
       - name: Pre-build verification (确保config.h可访问)
         run: |
@@ -166,7 +189,7 @@ jobs:
           # 彻底清理旧编译产物
           make -f Makefile.libretro clean || rm -f pcsx_rearmed_libretro.so
           # 完整编译参数：指定MIPS动态重编译、GPU、音频等核心模块
-          # 关键：确保在根目录执行make，且CFLAGS包含-I.
+          # 关键：确保在根目录执行make，且CFLAGS包含所有必要路径
           make -f Makefile.libretro \
             PLATFORM=gcw0 \
             ARCH=mipsel \
