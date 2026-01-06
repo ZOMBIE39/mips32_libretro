@@ -25,7 +25,6 @@ jobs:
           sudo chmod +x relocate-sdk.sh
           sudo ./relocate-sdk.sh
           sudo chown -R $USER:$USER /opt/gcw0-toolchain
-          # 验证工具链可用性
           /opt/gcw0-toolchain/usr/bin/mipsel-gcw0-linux-uclibc-gcc --version || echo "工具链可能存在问题，但继续执行"
 
       - name: Set environment variables
@@ -37,13 +36,8 @@ jobs:
           export AR=${CROSS_COMPILE}ar
           export LD=${CROSS_COMPILE}ld
           export STRIP=${CROSS_COMPILE}strip
-          # 关键修复：
-          # 1. -include stdio.h 强制包含标准IO头文件，解决FILE类型未定义
-          # 2. -DNO_ARM_FEATURES 跳过ARM架构头文件包含
-          # 3. 补充所有必要的包含路径和宏定义
           export CFLAGS="-include stdio.h -I. -I./libpcsxcore -I./plugins -I./include -DMAXPATHLEN=4096 -DNO_ARM_FEATURES -DMIPS_ARCH=1 -march=mips32r2 -mtune=mips32r2 -mhard-float -mabi=32 -ffast-math -O2 -fPIC -D__mips__=1 -D__mipsel__=1 -DMIPS32=1 -DMIPS_HARD_FLOAT=1"
           export CXXFLAGS="${CFLAGS}"
-          # 补充LDFLAGS：链接标准库，解决函数未定义
           export LDFLAGS="-shared -fPIC -Wl,--no-gc-sections -Wl,-z,now -Wl,-z,relro --sysroot=${SYSROOT} -lm -lpthread -ldl"
           
           echo "CROSS_COMPILE=$CROSS_COMPILE" >> $GITHUB_ENV
@@ -63,69 +57,56 @@ jobs:
         with:
           repository: libretro/pcsx_rearmed
           path: pcsx_rearmed
-          fetch-depth: 0  # 关键：完整克隆，获取git版本信息（避免revision.h生成失败）
+          fetch-depth: 0
 
-      - name: Patch source files to remove ARM dependencies and fix REV macro
+      - name: Patch source files (核心修复：ARM依赖+REV宏+lightrec宏函数冲突)
         run: |
-          # 先验证目录存在性
-          if [ ! -d "pcsx_rearmed" ]; then
-            echo "ERROR: pcsx_rearmed目录不存在！"
-            exit 1
-          fi
           cd pcsx_rearmed
-          # 移除cdrom.c中对arm_features.h的包含（MIPS架构不需要）
+          # 1. 移除ARM依赖
           sed -i '/#include "arm_features.h"/d' libpcsxcore/cdrom.c || echo "未找到arm_features.h包含语句，跳过"
-          # 确保psxcommon.h包含必要的标准头文件
           sed -i '1i #include <stdio.h>' libpcsxcore/psxcommon.h
           sed -i '1i #include <stdlib.h>' libpcsxcore/psxcommon.h
           sed -i '1i #include <string.h>' libpcsxcore/psxcommon.h
-          # ========== 新增：修复misc.c中的REV宏引用 ==========
-          # 将REV替换为GIT_VERSION（兼容宏定义）
+          # 2. 修复REV宏引用
           sed -i 's/REV/GIT_VERSION/g' libpcsxcore/misc.c
-          echo "✅ 已修补源码：移除ARM依赖 + 修复REV宏引用"
+          # 3. 修复lightrec宏与函数冲突（核心新增）
+          # 在mem.c的函数定义前undef冲突宏，让函数正常解析
+          sed -i '/int lightrec_init_mmap(void)/i #undef lightrec_init_mmap' libpcsxcore/lightrec/mem.c
+          sed -i '/void lightrec_free_mmap(void)/i #undef lightrec_free_mmap' libpcsxcore/lightrec/mem.c
+          # 补充系统头文件，解决lseek/read/close等函数隐式声明警告
+          sed -i '1i #include <unistd.h>' deps/libchdr/deps/zlib-1.3.1/gzlib.c
+          sed -i '1i #include <unistd.h>' deps/libchdr/deps/zlib-1.3.1/gzread.c
+          sed -i '1i #include <unistd.h>' deps/libchdr/deps/zlib-1.3.1/gzwrite.c
+          echo "✅ 已修补源码：移除ARM依赖 + 修复REV宏 + 解决lightrec宏函数冲突 + 补充系统头文件"
 
-      - name: Generate missing revision.h file (补充REV宏定义)
+      - name: Generate missing revision.h file
         run: |
           cd pcsx_rearmed
-          # 创建include目录（如果不存在）
           mkdir -p include
-          # 手动生成revision.h，包含REV宏定义（核心修复）
           cat > include/revision.h << EOF
           #ifndef REVISION_H
           #define REVISION_H
           #define GIT_VERSION "32e2193b"
-          #define REV GIT_VERSION  // 关键：添加REV宏，匹配源码引用
+          #define REV GIT_VERSION
           #define BUILD_DATE "__DATE__ __TIME__"
           #endif // REVISION_H
           EOF
-          # 同时在源码根目录也生成一份（兼容不同的包含路径）
           cp include/revision.h ./revision.h
-          echo "✅ 已手动生成revision.h文件（包含REV宏定义）"
+          echo "✅ 已手动生成revision.h文件"
 
       - name: Verify critical header files exist
         run: |
           cd pcsx_rearmed
-          # 检查核心头文件是否存在
           if [ ! -f libpcsxcore/psemu_plugin_defs.h ]; then
-            echo "ERROR: psemu_plugin_defs.h 缺失！"
-            # 尝试从源码目录查找并复制
-            find . -name "psemu_plugin_defs.h" -type f
-            # 如果找到则复制到libpcsxcore目录
             find . -name "psemu_plugin_defs.h" -type f -exec cp {} libpcsxcore/ \;
-          fi
-          # 验证revision.h是否存在且包含REV宏
-          if [ ! -f include/revision.h ] || [ ! -f revision.h ]; then
-            echo "ERROR: revision.h生成失败！"
-            exit 1
           fi
           grep -q "REV" include/revision.h || echo "WARNING: revision.h中未找到REV宏定义"
           ls -lh libpcsxcore/psemu_plugin_defs.h include/revision.h revision.h || echo "部分头文件缺失，继续尝试编译"
 
-      - name: Generate complete config.h (补充核心宏定义)
+      - name: Generate complete config.h
         run: |
           cd pcsx_rearmed
           cat > config.h << EOF
-          // 基础架构定义
           #define ARCH_MIPS 1
           #define ARCH_MIPSEL 1
           #define __mips__ 1
@@ -136,11 +117,9 @@ jobs:
           #define __mips_abi_hard 1
           #define MIPS_ARCH 1
           
-          // 系统路径宏定义
           #define MAXPATHLEN 4096
           #define PATH_MAX 4096
           
-          // 标准库支持（解决FILE/stdio函数问题）
           #define HAVE_STDIO_H 1
           #define HAVE_STDLIB_H 1
           #define HAVE_STRING_H 1
@@ -152,15 +131,12 @@ jobs:
           #define HAVE_SYS_MMAN_H 1
           #define HAVE_PTHREAD_H 1
           
-          // 禁用ARM架构特性
           #define NO_ARM_FEATURES 1
           #undef ARM_ARCH
           
-          // Libretro核心必需定义
           #define HAVE_LIBRETRO 1
           #define LIBRETRO_API __attribute__((visibility("default")))
           
-          // 功能模块启用
           #define HAVE_DYNAREC 1
           #define DYNAREC_MIPS 1
           #define DYNAREC_LIGHTREC 1
@@ -172,7 +148,6 @@ jobs:
           #define DISABLE_THREADS 0
           #define HAVE_THREADS 1
           
-          // 函数支持
           #define HAVE_MEMCPY 1
           #define HAVE_MEMSET 1
           #define HAVE_MEMMOVE 1
@@ -188,44 +163,34 @@ jobs:
           #define HAVE_FREE 1
           #define HAVE_REALLOC 1
           
-          // 工具链路径
           #define SYSROOT "${{ env.SYSROOT }}"
           #define CROSS_COMPILE "${{ env.CROSS_COMPILE }}"
           
-          // 编译优化
           #define HAVE_GCC_ATOMICS 1
           #define HAVE_GCC_BUILTINS 1
           #define HAVE_INLINE 1
           #define PACKAGE_VERSION "gcw0-20260106"
           #define VERSION "gcw0-20260106"
           EOF
-          
-          # 关键验证：确认文件存在且路径正确
           if [ ! -f config.h ]; then
             echo "ERROR: 生成config.h失败！"
             exit 1
           fi
-          echo "✅ config.h 生成成功，路径：$(pwd)/config.h"
-          ls -lh config.h
+          echo "✅ config.h 生成成功"
 
       - name: Pre-build verification
         run: |
           cd pcsx_rearmed
-          # 确认config.h和修补后的源码存在
           if [ ! -f config.h ]; then exit 1; fi
-          if grep -q "arm_features.h" libpcsxcore/cdrom.c; then
-            echo "WARNING: ARM头文件包含未移除，但继续执行"
-          fi
-          # 验证misc.c中的REV已替换为GIT_VERSION
-          grep -q "REV" libpcsxcore/misc.c && echo "WARNING: misc.c中仍存在REV引用" || echo "✅ misc.c中REV已替换为GIT_VERSION"
+          grep -q "REV" libpcsxcore/misc.c && echo "WARNING: misc.c中仍存在REV引用" || echo "✅ misc.c中REV已替换"
+          # 验证lightrec宏undef是否生效
+          grep -q "#undef lightrec_init_mmap" libpcsxcore/lightrec/mem.c || echo "WARNING: lightrec宏undef未生效"
           echo "✅ 预编译验证通过"
 
       - name: Build pcsx_rearmed libretro core
         run: |
           cd pcsx_rearmed
-          # 彻底清理旧产物
           make -f Makefile.libretro clean || rm -f pcsx_rearmed_libretro.so
-          # 编译（降低并行数，避免编译错误）
           make -f Makefile.libretro \
             PLATFORM=unix \
             ARCH=mipsel \
@@ -243,7 +208,6 @@ jobs:
             SOUND=null \
             HAVE_THREADS=0 \
             -j1
-          # 可选strip
           ${{ env.STRIP }} --strip-unneeded pcsx_rearmed_libretro.so || echo "strip失败，跳过"
 
       - name: Verify build result
