@@ -13,7 +13,7 @@ jobs:
     steps:
       - name: Install system dependencies
         run: |
-          sudo apt update && sudo apt install -y wget tar make gcc git autoconf automake libtool pkg-config
+          sudo apt update && sudo apt install -y wget tar make gcc git
 
       - name: Download and setup GCW0 toolchain
         run: |
@@ -26,63 +26,66 @@ jobs:
           sudo ./relocate-sdk.sh
           sudo chown -R $USER:$USER /opt/gcw0-toolchain
 
-      - name: Set environment variables
+      - name: Set environment variables (关键调整)
         run: |
-          echo "CROSS_COMPILE=/opt/gcw0-toolchain/usr/bin/mipsel-gcw0-linux-uclibc-" >> $GITHUB_ENV
-          echo "SYSROOT=/opt/gcw0-toolchain/usr/mipsel-gcw0-linux-uclibc/sysroot" >> $GITHUB_ENV
-          echo "CC=/opt/gcw0-toolchain/usr/bin/mipsel-gcw0-linux-uclibc-gcc" >> $GITHUB_ENV
-          echo "CXX=/opt/gcw0-toolchain/usr/bin/mipsel-gcw0-linux-uclibc-g++" >> $GITHUB_ENV
-          echo "AR=/opt/gcw0-toolchain/usr/bin/mipsel-gcw0-linux-uclibc-ar" >> $GITHUB_ENV
-          echo "LD=/opt/gcw0-toolchain/usr/bin/mipsel-gcw0-linux-uclibc-ld" >> $GITHUB_ENV
-          echo "CFLAGS=-ffast-math -march=mips32 -mtune=mips32r2 -mhard-float -fdata-sections -ffunction-sections --sysroot=${{ env.SYSROOT }}" >> $GITHUB_ENV
-          echo "CXXFLAGS=-ffast-math -march=mips32 -mtune=mips32r2 -mhard-float -fdata-sections -ffunction-sections --sysroot=${{ env.SYSROOT }}" >> $GITHUB_ENV
-          # 新增：导出工具链PATH，确保辅助工具能被找到
+          # 导出所有工具链变量到当前shell（替代configure参数）
+          export CROSS_COMPILE=/opt/gcw0-toolchain/usr/bin/mipsel-gcw0-linux-uclibc-
+          export SYSROOT=/opt/gcw0-toolchain/usr/mipsel-gcw0-linux-uclibc/sysroot
+          export CC=/opt/gcw0-toolchain/usr/bin/mipsel-gcw0-linux-uclibc-gcc
+          export CXX=/opt/gcw0-toolchain/usr/bin/mipsel-gcw0-linux-uclibc-g++
+          export AR=/opt/gcw0-toolchain/usr/bin/mipsel-gcw0-linux-uclibc-ar
+          export LD=/opt/gcw0-toolchain/usr/bin/mipsel-gcw0-linux-uclibc-ld
+          export CFLAGS="-ffast-math -march=mips32 -mtune=mips32r2 -mhard-float -fdata-sections -ffunction-sections --sysroot=${SYSROOT}"
+          export CXXFLAGS="-ffast-math -march=mips32 -mtune=mips32r2 -mhard-float -fdata-sections -ffunction-sections --sysroot=${SYSROOT}"
+          # 将变量写入GITHUB_ENV，后续步骤可用
+          echo "CROSS_COMPILE=$CROSS_COMPILE" >> $GITHUB_ENV
+          echo "SYSROOT=$SYSROOT" >> $GITHUB_ENV
+          echo "CC=$CC" >> $GITHUB_ENV
+          echo "CXX=$CXX" >> $GITHUB_ENV
+          echo "AR=$AR" >> $GITHUB_ENV
+          echo "LD=$LD" >> $GITHUB_ENV
+          echo "CFLAGS=$CFLAGS" >> $GITHUB_ENV
+          echo "CXXFLAGS=$CXXFLAGS" >> $GITHUB_ENV
+          # 工具链PATH加入环境
           echo "/opt/gcw0-toolchain/usr/bin" >> $GITHUB_PATH
 
       - name: Checkout pcsx_rearmed source code
         uses: actions/checkout@v4
         with:
-          repository: libretro/pcsx_rearmed  # 替换为你的仓库
+          repository: libretro/pcsx_rearmed
           path: pcsx_rearmed
           fetch-depth: 1
 
-      - name: Generate config.h (关键修复步骤)
+      - name: Generate config.h (适配自定义configure)
         run: |
           cd pcsx_rearmed
-          # 步骤1：生成configure脚本（如果缺失）
-          if [ ! -f configure ]; then
-            ./autogen.sh
-          fi
-          # 步骤2：运行configure生成config.h，适配GCW0/mipsel平台
+          # 关键：使用自定义configure支持的参数，去掉所有不支持的标准参数
+          # --platform=generic：GCW0不在预设列表（pandora/maemo等），用generic
+          # --sound-drivers=none：关闭所有音频驱动（libretro核心不需要）
+          # --dynarec=lightrec：指定轻量级动态重编译器（适配mips）
+          # --gpu=peops：指定GPU插件（适配嵌入式平台）
           ./configure \
-            --host=mipsel-gcw0-linux-uclibc \
-            --prefix=/usr \
-            --sysconfdir=/etc \
-            --disable-sdl \
-            --disable-alsa \
-            --enable-libretro \
-            CC=${{ env.CC }} \
-            CXX=${{ env.CXX }} \
-            CFLAGS="${{ env.CFLAGS }}" \
-            CXXFLAGS="${{ env.CXXFLAGS }}"
+            --platform=generic \
+            --sound-drivers=none \
+            --dynarec=lightrec \
+            --gpu=peops \
+            --disable-threads  # 关闭多线程（简化嵌入式编译）
+          # 验证config.h是否生成（关键检查）
+          if [ ! -f config.h ]; then
+            echo "ERROR: config.h未生成！"
+            exit 1
+          fi
 
       - name: Build pcsx_rearmed core (适配GCW0)
         run: |
           cd pcsx_rearmed
-          # 清理旧编译产物，避免冲突
-          make -f Makefile.libretro clean
-          # 编译，新增PLATFORM参数指定unix，适配mipsel架构
+          # 清理旧产物
+          make -f Makefile.libretro clean || true
+          # 编译：传递环境变量，指定平台和架构
           make -f Makefile.libretro \
             PLATFORM=unix \
             ARCH=mipsel \
-            CROSS_COMPILE=${{ env.CROSS_COMPILE }} \
-            CC=${{ env.CC }} \
-            CXX=${{ env.CXX }} \
-            AR=${{ env.AR }} \
-            LD=${{ env.LD }} \
-            CFLAGS="${{ env.CFLAGS }}" \
-            CXXFLAGS="${{ env.CXXFLAGS }}" \
-            -j$(nproc)  # 多线程编译加速
+            -j$(nproc)
 
       - name: Upload build artifact
         uses: actions/upload-artifact@v4
