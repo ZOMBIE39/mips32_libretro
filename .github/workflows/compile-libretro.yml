@@ -41,7 +41,7 @@ jobs:
           # 1. -include stdio.h 强制包含标准IO头文件，解决FILE类型未定义
           # 2. -DNO_ARM_FEATURES 跳过ARM架构头文件包含
           # 3. 补充所有必要的包含路径和宏定义
-          export CFLAGS="-include stdio.h -I. -I./libpcsxcore -I./plugins -DMAXPATHLEN=4096 -DNO_ARM_FEATURES -DMIPS_ARCH=1 -march=mips32r2 -mtune=mips32r2 -mhard-float -mabi=32 -ffast-math -O2 -fPIC -D__mips__=1 -D__mipsel__=1 -DMIPS32=1 -DMIPS_HARD_FLOAT=1"
+          export CFLAGS="-include stdio.h -I. -I./libpcsxcore -I./plugins -I./include -DMAXPATHLEN=4096 -DNO_ARM_FEATURES -DMIPS_ARCH=1 -march=mips32r2 -mtune=mips32r2 -mhard-float -mabi=32 -ffast-math -O2 -fPIC -D__mips__=1 -D__mipsel__=1 -DMIPS32=1 -DMIPS_HARD_FLOAT=1"
           export CXXFLAGS="${CFLAGS}"
           # 补充LDFLAGS：链接标准库，解决函数未定义
           export LDFLAGS="-shared -fPIC -Wl,--no-gc-sections -Wl,-z,now -Wl,-z,relro --sysroot=${SYSROOT} -lm -lpthread -ldl"
@@ -58,13 +58,12 @@ jobs:
           echo "LDFLAGS=$LDFLAGS" >> $GITHUB_ENV
           echo "/opt/gcw0-toolchain/usr/bin" >> $GITHUB_PATH
 
-      # ========== 关键调整：先检出源码，再执行补丁 ==========
       - name: Checkout pcsx_rearmed source code
         uses: actions/checkout@v4
         with:
           repository: libretro/pcsx_rearmed
           path: pcsx_rearmed
-          fetch-depth: 1
+          fetch-depth: 0  # 关键：完整克隆，获取git版本信息（避免revision.h生成失败）
 
       - name: Patch source files to remove ARM dependencies
         run: |
@@ -82,6 +81,24 @@ jobs:
           sed -i '1i #include <string.h>' libpcsxcore/psxcommon.h
           echo "✅ 已修补源码，移除ARM架构依赖"
 
+      # ========== 新增：手动生成revision.h文件 ==========
+      - name: Generate missing revision.h file
+        run: |
+          cd pcsx_rearmed
+          # 创建include目录（如果不存在）
+          mkdir -p include
+          # 手动生成revision.h，包含基础版本定义（避免编译报错）
+          cat > include/revision.h << EOF
+          #ifndef REVISION_H
+          #define REVISION_H
+          #define GIT_VERSION "32e2193"
+          #define BUILD_DATE "__DATE__ __TIME__"
+          #endif // REVISION_H
+          EOF
+          # 同时在源码根目录也生成一份（兼容不同的包含路径）
+          cp include/revision.h ./revision.h
+          echo "✅ 已手动生成revision.h文件"
+
       - name: Verify critical header files exist
         run: |
           cd pcsx_rearmed
@@ -93,7 +110,12 @@ jobs:
             # 如果找到则复制到libpcsxcore目录
             find . -name "psemu_plugin_defs.h" -type f -exec cp {} libpcsxcore/ \;
           fi
-          ls -lh libpcsxcore/psemu_plugin_defs.h || echo "psemu_plugin_defs.h 仍缺失，继续尝试编译"
+          # 验证revision.h是否存在
+          if [ ! -f include/revision.h ] || [ ! -f revision.h ]; then
+            echo "ERROR: revision.h生成失败！"
+            exit 1
+          fi
+          ls -lh libpcsxcore/psemu_plugin_defs.h include/revision.h revision.h || echo "部分头文件缺失，继续尝试编译"
 
       - name: Generate complete config.h (补充核心宏定义)
         run: |
