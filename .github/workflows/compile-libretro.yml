@@ -1,11 +1,11 @@
-name: Build pcsx_rearmed for GCW0 (Direct Make)
+name: Build pcsx_rearmed for GCW0
 
 on:
   push:
     branches: [ main, master ]
   pull_request:
     branches: [ main, master ]
-  workflow_dispatch:
+  workflow_dispatch:  # 允许手动触发
 
 jobs:
   build:
@@ -25,75 +25,67 @@ jobs:
           tar \
           gzip \
           libsdl1.2-dev \
+          libsdl2-dev \
           zlib1g-dev \
-          libpng-dev
+          libpng-dev \
+          libvorbis-dev \
+          libflac-dev \
+          libmpg123-dev \
+          libmad0-dev
           
     - name: Setup GCW0 toolchain
       run: |
+        # 创建/opt目录并设置权限
         sudo mkdir -p /opt
         sudo chmod 777 /opt
         
+        # 下载工具链
         cd /opt
-        wget -q https://github.com/game-de-it/GKD_pixel/releases/download/GKDpixel-toolchain-v1/mipsel-gcw0-linux-uclibc_sdk-buildroot.tar.gz
-        tar zxf mipsel-gcw0-linux-uclibc_sdk-buildroot.tar.gz
+        wget https://github.com/game-de-it/GKD_pixel/releases/download/GKDpixel-toolchain-v1/mipsel-gcw0-linux-uclibc_sdk-buildroot.tar.gz
+        
+        # 解压工具链
+        tar zxvf mipsel-gcw0-linux-uclibc_sdk-buildroot.tar.gz
+        
+        # 重命名工具链目录（为了兼容性）
         mv mipsel-gcw0-linux-uclibc_sdk-buildroot gcw0-toolchain
+        
+        # 运行重定位脚本
         cd gcw0-toolchain
         ./relocate-sdk.sh
         
         # 设置环境变量
-        export CC=/opt/gcw0-toolchain/usr/bin/mipsel-gcw0-linux-uclibc-gcc
-        export CXX=/opt/gcw0-toolchain/usr/bin/mipsel-gcw0-linux-uclibc-g++
-        export AR=/opt/gcw0-toolchain/usr/bin/mipsel-gcw0-linux-uclibc-ar
-        export LD=/opt/gcw0-toolchain/usr/bin/mipsel-gcw0-linux-uclibc-ld
-        export STRIP=/opt/gcw0-toolchain/usr/bin/mipsel-gcw0-linux-uclibc-strip
-        export RANLIB=/opt/gcw0-toolchain/usr/bin/mipsel-gcw0-linux-uclibc-ranlib
+        echo "CROSS_COMPILE=/opt/gcw0-toolchain/usr/bin/mipsel-gcw0-linux-uclibc-" >> $GITHUB_ENV
+        echo "SYSROOT=/opt/gcw0-toolchain/usr/mipsel-gcw0-linux-uclibc/sysroot" >> $GITHUB_ENV
+        echo "CC=/opt/gcw0-toolchain/usr/bin/mipsel-gcw0-linux-uclibc-gcc" >> $GITHUB_ENV
+        echo "CXX=/opt/gcw0-toolchain/usr/bin/mipsel-gcw0-linux-uclibc-g++" >> $GITHUB_ENV
+        echo "AR=/opt/gcw0-toolchain/usr/bin/mipsel-gcw0-linux-uclibc-ar" >> $GITHUB_ENV
+        echo "LD=/opt/gcw0-toolchain/usr/bin/mipsel-gcw0-linux-uclibc-ld" >> $GITHUB_ENV
+        echo "PATH=/opt/gcw0-toolchain/usr/bin:$PATH" >> $GITHUB_ENV
         
         # 设置编译标志
-        export CFLAGS="-ffast-math -march=mips32 -mtune=mips32r2 -mhard-float -fdata-sections -ffunction-sections -O2"
-        export CXXFLAGS="$CFLAGS"
-        export LDFLAGS="-Wl,--gc-sections"
+        echo "CFLAGS=-ffast-math -march=mips32 -mtune=mips32r2 -mhard-float -fdata-sections -ffunction-sections" >> $GITHUB_ENV
+        echo "CXXFLAGS=-ffast-math -march=mips32 -mtune=mips32r2 -mhard-float -fdata-sections -ffunction-sections" >> $GITHUB_ENV
         
-        echo "CC=$CC" >> $GITHUB_ENV
-        echo "CXX=$CXX" >> $GITHUB_ENV
-        echo "AR=$AR" >> $GITHUB_ENV
-        echo "LD=$LD" >> $GITHUB_ENV
-        echo "STRIP=$STRIP" >> $GITHUB_ENV
-        echo "RANLIB=$RANLIB" >> $GITHUB_ENV
-        echo "CFLAGS=$CFLAGS" >> $GITHUB_ENV
-        echo "CXXFLAGS=$CXXFLAGS" >> $GITHUB_ENV
-        echo "LDFLAGS=$LDFLAGS" >> $GITHUB_ENV
-        
-    - name: Clone and build pcsx_rearmed
+    - name: Clone pcsx_rearmed repository
       run: |
-        # 克隆pcsx_rearmed
-        git clone https://github.com/notaz/pcsx_rearmed.git
+        git clone https://github.com/libretro/pcsx_rearmed.git
         cd pcsx_rearmed
+        git submodule update --init
         
-        # 应用GCW0特定的补丁或配置（如果需要）
-        # 这里可以根据需要添加GCW0特定的配置
-        
-        # 配置和编译
-        ./configure --platform=gcw0 --sound-drivers=sdl
-        
-        # 编译
-        make
-        
-        # 如果是libretro版本
-        # make -f Makefile.libretro platform=gcw0
-        
-    - name: Create release package
+    - name: Build pcsx_rearmed
       run: |
-        mkdir -p release
-        cp pcsx_rearmed/pcsx_rearmed release/ || true
-        cp pcsx_rearmed/pcsx_rearmed_libretro.so release/ || true
+        cd pcsx_rearmed
+        # 使用libretro构建系统
+        make -f Makefile.libretro platform=gcw0
         
-        # 创建readme文件
-        echo "PCSX ReARMed for GCW0/GKD Pixel" > release/README.txt
-        echo "Built on: $(date)" >> release/README.txt
-        echo "Toolchain: GCW0 SDK" >> release/README.txt
+    - name: Verify the build
+      run: |
+        cd pcsx_rearmed
+        file pcsx_rearmed_libretro.so
+        echo "Build completed successfully!"
         
-    - name: Upload artifacts
+    - name: Upload artifact
       uses: actions/upload-artifact@v4
       with:
-        name: pcsx-rearmed-gcw0
-        path: release/
+        name: pcsx_rearmed-gcw0
+        path: pcsx_rearmed/pcsx_rearmed_libretro.so
