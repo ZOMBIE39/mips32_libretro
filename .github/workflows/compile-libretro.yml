@@ -28,7 +28,7 @@ jobs:
           # 验证工具链可用性
           /opt/gcw0-toolchain/usr/bin/mipsel-gcw0-linux-uclibc-gcc --version
 
-      - name: Set environment variables (补充链接参数)
+      - name: Set environment variables (关键添加-I.头文件路径)
         run: |
           export CROSS_COMPILE=/opt/gcw0-toolchain/usr/bin/mipsel-gcw0-linux-uclibc-
           export SYSROOT=/opt/gcw0-toolchain/usr/mipsel-gcw0-linux-uclibc/sysroot
@@ -38,11 +38,11 @@ jobs:
           export LD=${CROSS_COMPILE}ld
           export STRIP=${CROSS_COMPILE}strip
           
-          # 编译参数：补充-O2优化（避免代码被精简过度），保留调试信息
-          export CFLAGS="-O2 -ffast-math -march=mips32 -mtune=mips32r2 -mhard-float -fdata-sections -ffunction-sections --sysroot=${SYSROOT} -D_GNU_SOURCE=1"
+          # 核心修复：添加 -I. 让编译器从根目录搜索头文件（解决config.h路径问题）
+          export CFLAGS="-O2 -ffast-math -march=mips32 -mtune=mips32r2 -mhard-float -fdata-sections -ffunction-sections --sysroot=${SYSROOT} -D_GNU_SOURCE=1 -I."
           export CXXFLAGS="${CFLAGS}"
           
-          # 关键：补充链接参数（LDFLAGS），确保链接所有模块
+          # 补充链接参数
           export LDFLAGS="-march=mips32 -mtune=mips32r2 -mhard-float --sysroot=${SYSROOT} -lpthread -lm -ldl -lz -Wl,--gc-sections"
           export LDLIBS="-lpthread -lm -ldl -lz"
           
@@ -70,9 +70,10 @@ jobs:
       - name: Prepare build environment (先clean再生成config.h)
         run: |
           cd pcsx_rearmed
-          # 第一步：清理所有旧产物（包括可能残留的config.h）
+          # 第一步：清理所有旧产物
           make -f Makefile.libretro clean || true
-          # 第二步：重新生成config.h（clean之后生成，避免被删除）
+          
+          # 第二步：生成config.h到根目录（验证生成路径）
           cat > config.h << EOF
           /* 架构宏（完整） */
           #define ARCH_MIPS 1
@@ -88,13 +89,13 @@ jobs:
           #define LIBRETRO 1
           
           /* 功能宏（启用完整模块） */
-          #define DISABLE_THREADS 0  // 启用多线程（核心功能）
+          #define DISABLE_THREADS 0
           #define SOUND_DRIVER_SDL 0
           #define SOUND_DRIVER_ALSA 0
           #define SOUND_DRIVER_OSS 0
           #define SOUND_DRIVER_PULSEAUDIO 0
           #define GPU_PEOPS 1
-          #define GPU_PEOPS_MIPS 1  // 启用MIPS优化的PEOPS GPU
+          #define GPU_PEOPS_MIPS 1
           #define DYNAREC_LIGHTREC 1
           #define DYNAREC_NONE 0
           #define HAVE_DYNAREC 1
@@ -106,7 +107,7 @@ jobs:
           #define HAVE_CHD 1
           #define HAVE_PBP 1
           
-          /* 系统宏（避免代码跳过） */
+          /* 系统宏 */
           #define SYSROOT "${{ env.SYSROOT }}"
           #define CROSS_COMPILE "${{ env.CROSS_COMPILE }}"
           #define HAVE_STDINT_H 1
@@ -127,24 +128,29 @@ jobs:
           #define _GNU_SOURCE 1
           EOF
           
-          # 验证config.h是否生成成功（关键）
-          if [ ! -f config.h ]; then
-            echo "ERROR: 手动生成config.h失败！"
-            exit 1
-          fi
-          # 确保config.h权限正确，编译器可读取
+          # 验证：打印config.h路径和内容（排查生成问题）
+          echo "✅ config.h生成路径：$(pwd)/config.h"
+          ls -la config.h
+          cat config.h | head -10  # 打印前10行验证内容
+          
+          # 确保权限正确
           chmod 644 config.h
-          echo "✅ config.h 手动生成成功（clean后重新生成）"
+          echo "✅ config.h 生成完成并验证"
 
       - name: Build pcsx_rearmed libretro core (完整编译参数)
         run: |
           cd pcsx_rearmed
-          # 确认config.h存在后再编译
+          # 双重验证：config.h存在 + CFLAGS包含-I.
           if [ ! -f config.h ]; then
             echo "ERROR: config.h缺失，编译终止！"
             exit 1
           fi
-          # 显式传递所有编译/链接参数，确保完整编译
+          if [[ ! "${{ env.CFLAGS }}" =~ "-I." ]]; then
+            echo "ERROR: CFLAGS未包含-I.，头文件路径错误！"
+            exit 1
+          fi
+          
+          # 显式传递所有参数编译
           make -f Makefile.libretro \
             PLATFORM=unix \
             ARCH=mipsel \
@@ -160,22 +166,17 @@ jobs:
             LDFLAGS="${{ env.LDFLAGS }}" \
             LDLIBS="${{ env.LDLIBS }}" \
             -j$(nproc)
-          # 可选：strip精简但保留核心（不影响体积过大问题）
-          # ${{ env.STRIP }} --strip-unneeded pcsx_rearmed_libretro.so
 
       - name: Verify build result (检查体积)
         run: |
           cd pcsx_rearmed
-          # 检查产物存在性+体积
           if [ -f pcsx_rearmed_libretro.so ]; then
             FILE_SIZE=$(du -h pcsx_rearmed_libretro.so | awk '{print $1}')
             echo "✅ 编译成功！产物路径：$(pwd)/pcsx_rearmed_libretro.so"
             echo "✅ 产物体积：$FILE_SIZE"
-            # 验证架构
-            file pcsx_rearmed_libretro.so || echo "⚠️ file命令架构验证跳过"
-            # 体积检查（提示）
+            file pcsx_rearmed_libretro.so || echo "⚠️ file命令验证跳过"
             if [[ $(du -k pcsx_rearmed_libretro.so | awk '{print $1}') -lt 1000 ]]; then
-              echo "⚠️ 产物体积小于1MB，可能仍有模块未编译（但流程已完成）"
+              echo "⚠️ 产物体积小于1MB，建议检查功能宏是否完整"
             fi
           else
             echo "ERROR: 编译产物缺失！"
