@@ -1,4 +1,4 @@
-name: Build pcsx_rearmed for Dingux (mips32)
+name: Build pcsx_rearmed for GKD Pixel (Dingux mips32)
 
 on:
   push:
@@ -9,81 +9,91 @@ jobs:
   build:
     runs-on: ubuntu-latest
     steps:
-      - name: Install build dependencies
+      # 步骤1：安装基础依赖（仅保留必要的，工具链自带编译依赖）
+      - name: Install basic dependencies
         run: |
           sudo apt update && sudo apt install -y \
             git \
             build-essential \
-            gcc-mipsel-linux-gnu \
-            g++-mipsel-linux-gnu \
-            libtool \
-            autoconf \
-            automake \
-            pkg-config \
+            wget \
+            tar \
+            unzip \
             make \
             cmake \
-            python3 \
-            wget \
-            unzip
+            python3
 
+      # 步骤2：下载并解压GKD pixel专用工具链
+      - name: Download and extract GKD pixel toolchain
+        run: |
+          # 创建工具链存放目录
+          mkdir -p ~/toolchain
+          cd ~/toolchain
+          # 下载工具链压缩包
+          wget -q https://github.com/game-de-it/GKD_pixel/releases/download/GKDpixel-toolchain-v1/mipsel-gcw0-linux-uclibc_sdk-buildroot.tar.gz
+          # 解压工具链（保留目录结构）
+          tar -xzf mipsel-gcw0-linux-uclibc_sdk-buildroot.tar.gz
+          # 调试：确认工具链解压成功，打印编译器路径
+          TOOLCHAIN_PATH=$(find ~/toolchain -name "mipsel-gcw0-linux-uclibc-gcc" | head -1)
+          echo "✅ 工具链编译器路径：$TOOLCHAIN_PATH"
+          # 将工具链的bin目录加入系统PATH
+          TOOLCHAIN_BIN_DIR=$(dirname $TOOLCHAIN_PATH)
+          echo "TOOLCHAIN_BIN_DIR=$TOOLCHAIN_BIN_DIR" >> $GITHUB_ENV
+          echo "$TOOLCHAIN_BIN_DIR" >> $GITHUB_PATH
+
+      # 步骤3：克隆libretro-super并确保pcsx_rearmed源码存在
       - name: Clone libretro-super and fetch pcsx_rearmed source
         run: |
-          # 克隆libretro-super仓库（深度设为1加快速度）
           git clone --depth=1 https://github.com/libretro/libretro-super.git
           cd libretro-super
-          # 第一步：手动初始化并更新所有子模块（强制重试）
           git submodule sync --recursive
           git submodule update --init --recursive --force
-          # 第二步：如果子模块仍未拉取，手动克隆pcsx_rearmed源码（兜底方案）
           if [ ! -d "libretro-pcsx_rearmed" ]; then
-            echo "子模块拉取失败，手动克隆pcsx_rearmed源码..."
+            echo "手动克隆pcsx_rearmed源码..."
             git clone https://github.com/libretro/pcsx_rearmed.git libretro-pcsx_rearmed
           fi
-          # 调试：打印子模块状态和目录结构
-          echo "===== 子模块状态 ====="
-          git submodule status
-          echo "===== libretro-super目录结构 ====="
-          ls -la
-          echo "===== pcsx_rearmed目录是否存在 ====="
+          # 验证源码目录
           if [ -d "libretro-pcsx_rearmed" ]; then
-            echo "✅ libretro-pcsx_rearmed目录存在"
-            ls -la libretro-pcsx_rearmed/
+            echo "✅ pcsx_rearmed源码目录存在"
           else
-            echo "❌ libretro-pcsx_rearmed目录不存在"
-          fi
-
-      - name: Set cross-compile env for Dingux mips32
-        run: |
-          echo "CC=mipsel-linux-gnu-gcc" >> $GITHUB_ENV
-          echo "CXX=mipsel-linux-gnu-g++" >> $GITHUB_ENV
-          echo "AR=mipsel-linux-gnu-ar" >> $GITHUB_ENV
-          echo "RANLIB=mipsel-linux-gnu-ranlib" >> $GITHUB_ENV
-          echo "CFLAGS=-march=mips32 -mabi=32 -mtune=mips32 -O2 -fPIC -DDINGUX=1" >> $GITHUB_ENV
-          echo "CXXFLAGS=-march=mips32 -mabi=32 -mtune=mips32 -O2 -fPIC -DDINGUX=1" >> $GITHUB_ENV
-          echo "LDFLAGS=-march=mips32 -mabi=32 -mtune=mips32 -fPIC" >> $GITHUB_ENV
-          env | grep -E "(CC|CXX|CFLAGS|DINGUX)"
-
-      - name: Build pcsx_rearmed for Dingux mips32
-        run: |
-          cd libretro-super
-          # 先确认源码目录存在再编译
-          if [ ! -d "libretro-pcsx_rearmed" ]; then
-            echo "❌ 源码目录不存在，编译终止"
+            echo "❌ 源码目录不存在，终止"
             exit 1
           fi
-          # 开启详细日志编译
-          VERBOSE=1 ./libretro-build.sh pcsx_rearmed
-          # 调试：查找.so文件
-          echo "===== 查找所有编译生成的.so文件 ====="
-          find . -name "*.so" -type f
-          ls -la ./libretro-pcsx_rearmed/ || echo "libretro-pcsx_rearmed目录仍不存在"
 
+      # 步骤4：配置GKD pixel工具链的编译环境变量
+      - name: Set cross-compile env for GKD Pixel (mips32 uclibc)
+        run: |
+          # 使用GKD专用编译器（替换原ubuntu官方工具链）
+          echo "CC=mipsel-gcw0-linux-uclibc-gcc" >> $GITHUB_ENV
+          echo "CXX=mipsel-gcw0-linux-uclibc-g++" >> $GITHUB_ENV
+          echo "AR=mipsel-gcw0-linux-uclibc-ar" >> $GITHUB_ENV
+          echo "RANLIB=mipsel-gcw0-linux-uclibc-ranlib" >> $GITHUB_ENV
+          echo "STRIP=mipsel-gcw0-linux-uclibc-strip" >> $GITHUB_ENV
+          # GKD Pixel专用编译参数（适配uclibc和GKD硬件）
+          echo "CFLAGS=-march=mips32 -mtune=mips32 -mips32 -O2 -fPIC -ffast-math -DDINGUX=1 -DGKD_PIXEL=1" >> $GITHUB_ENV
+          echo "CXXFLAGS=-march=mips32 -mtune=mips32 -mips32 -O2 -fPIC -ffast-math -DDINGUX=1 -DGKD_PIXEL=1" >> $GITHUB_ENV
+          echo "LDFLAGS=-march=mips32 -mtune=mips32 -mips32 -fPIC -static-libgcc" >> $GITHUB_ENV
+          # 验证编译器是否可用
+          mipsel-gcw0-linux-uclibc-gcc --version || echo "⚠️ 编译器版本检查失败，但继续尝试编译"
+
+      # 步骤5：编译pcsx_rearmed核心
+      - name: Build pcsx_rearmed for GKD Pixel
+        run: |
+          cd libretro-super
+          VERBOSE=1 ./libretro-build.sh pcsx_rearmed
+          # 查找编译产物
+          echo "===== 编译产物列表 ====="
+          find . -name "*.so" -type f -size +1k # 只显示大于1k的.so文件（排除空文件）
+          # 验证产物架构
+          if [ -f "libretro-pcsx_rearmed/pcsx_rearmed_libretro.so" ]; then
+            echo "===== 产物架构信息 ====="
+            file libretro-pcsx_rearmed/pcsx_rearmed_libretro.so
+          fi
+
+      # 步骤6：上传编译产物
       - name: Upload build artifact
         uses: actions/upload-artifact@v4
         with:
-          name: pcsx_rearmed-dingux-mips32
-          path: |
-            libretro-super/libretro-pcsx_rearmed/pcsx_rearmed_libretro.so
-            libretro-super/dist/unix/pcsx_rearmed_libretro.so
+          name: pcsx_rearmed-gkd-pixel-mips32
+          path: libretro-super/libretro-pcsx_rearmed/pcsx_rearmed_libretro.so
           retention-days: 30
           if-no-files-found: warn
