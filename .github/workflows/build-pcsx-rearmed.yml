@@ -26,13 +26,31 @@ jobs:
             wget \
             unzip
 
-      - name: Clone libretro-super
+      - name: Clone libretro-super and fetch pcsx_rearmed source
         run: |
-          git clone https://github.com/libretro/libretro-super.git
+          # 克隆libretro-super仓库（深度设为1加快速度）
+          git clone --depth=1 https://github.com/libretro/libretro-super.git
           cd libretro-super
-          git submodule update --init --recursive
-          # 调试：打印libretro-super初始目录结构
+          # 第一步：手动初始化并更新所有子模块（强制重试）
+          git submodule sync --recursive
+          git submodule update --init --recursive --force
+          # 第二步：如果子模块仍未拉取，手动克隆pcsx_rearmed源码（兜底方案）
+          if [ ! -d "libretro-pcsx_rearmed" ]; then
+            echo "子模块拉取失败，手动克隆pcsx_rearmed源码..."
+            git clone https://github.com/libretro/pcsx_rearmed.git libretro-pcsx_rearmed
+          fi
+          # 调试：打印子模块状态和目录结构
+          echo "===== 子模块状态 ====="
+          git submodule status
+          echo "===== libretro-super目录结构 ====="
           ls -la
+          echo "===== pcsx_rearmed目录是否存在 ====="
+          if [ -d "libretro-pcsx_rearmed" ]; then
+            echo "✅ libretro-pcsx_rearmed目录存在"
+            ls -la libretro-pcsx_rearmed/
+          else
+            echo "❌ libretro-pcsx_rearmed目录不存在"
+          fi
 
       - name: Set cross-compile env for Dingux mips32
         run: |
@@ -43,29 +61,29 @@ jobs:
           echo "CFLAGS=-march=mips32 -mabi=32 -mtune=mips32 -O2 -fPIC -DDINGUX=1" >> $GITHUB_ENV
           echo "CXXFLAGS=-march=mips32 -mabi=32 -mtune=mips32 -O2 -fPIC -DDINGUX=1" >> $GITHUB_ENV
           echo "LDFLAGS=-march=mips32 -mabi=32 -mtune=mips32 -fPIC" >> $GITHUB_ENV
-          # 调试：打印环境变量，确认交叉编译参数生效
           env | grep -E "(CC|CXX|CFLAGS|DINGUX)"
 
       - name: Build pcsx_rearmed for Dingux mips32
         run: |
           cd libretro-super
-          # 强制指定平台为unix，开启详细编译日志（关键：暴露编译错误）
+          # 先确认源码目录存在再编译
+          if [ ! -d "libretro-pcsx_rearmed" ]; then
+            echo "❌ 源码目录不存在，编译终止"
+            exit 1
+          fi
+          # 开启详细日志编译
           VERBOSE=1 ./libretro-build.sh pcsx_rearmed
-          # 调试：打印编译后所有目录下的.so文件，定位产物实际位置
+          # 调试：查找.so文件
           echo "===== 查找所有编译生成的.so文件 ====="
           find . -name "*.so" -type f
-          echo "===== 目录结构 ====="
-          ls -la ./libretro-pcsx_rearmed/
-          ls -la ./dist/unix/ || echo "dist/unix目录不存在"
+          ls -la ./libretro-pcsx_rearmed/ || echo "libretro-pcsx_rearmed目录仍不存在"
 
       - name: Upload build artifact
         uses: actions/upload-artifact@v4
         with:
           name: pcsx_rearmed-dingux-mips32
-          # 关键修正：优先取源码目录的产物（pcsx_rearmed的真实输出路径）
           path: |
             libretro-super/libretro-pcsx_rearmed/pcsx_rearmed_libretro.so
             libretro-super/dist/unix/pcsx_rearmed_libretro.so
           retention-days: 30
-          # 即使找不到文件也不中断（方便看调试日志）
           if-no-files-found: warn
