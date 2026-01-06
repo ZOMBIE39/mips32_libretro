@@ -37,8 +37,8 @@ jobs:
           export AR=${CROSS_COMPILE}ar
           export LD=${CROSS_COMPILE}ld
           export STRIP=${CROSS_COMPILE}strip
-          # 修正CFLAGS：移除过度裁剪参数，补充MIPS专属定义，关闭过度优化
-          export CFLAGS="-march=mips32r2 -mtune=mips32r2 -mhard-float -mabi=32 -ffast-math -O2 -fPIC -D__mips__=1 -D__mipsel__=1 -DMIPS32=1 -DMIPS_HARD_FLOAT=1"
+          # 关键修复：添加-I. 指定当前目录为包含路径，确保能找到config.h
+          export CFLAGS="-I. -march=mips32r2 -mtune=mips32r2 -mhard-float -mabi=32 -ffast-math -O2 -fPIC -D__mips__=1 -D__mipsel__=1 -DMIPS32=1 -DMIPS_HARD_FLOAT=1"
           export CXXFLAGS="${CFLAGS}"
           # 补充LDFLAGS：确保链接完整，避免过度裁剪
           export LDFLAGS="-shared -fPIC -Wl,--no-gc-sections -Wl,-z,now -Wl,-z,relro --sysroot=${SYSROOT}"
@@ -136,13 +136,29 @@ jobs:
           #define VERSION "gcw0-20260106"
           EOF
           
+          # 关键验证：确认文件存在且路径正确
           if [ ! -f config.h ]; then
             echo "ERROR: 生成config.h失败！"
             exit 1
           fi
-          # 打印config.h内容，便于调试
-          cat config.h
-          echo "✅ config.h 生成成功"
+          # 打印文件路径和内容，确保生成成功
+          echo "✅ config.h 生成成功，路径：$(pwd)/config.h"
+          ls -lh config.h
+          cat config.h | head -10
+
+      - name: Pre-build verification (确保config.h可访问)
+        run: |
+          cd pcsx_rearmed
+          # 再次确认config.h存在
+          if [ ! -f config.h ]; then
+            echo "ERROR: config.h 文件丢失！"
+            exit 1
+          fi
+          # 检查文件权限
+          chmod 644 config.h
+          # 打印当前目录结构，确认config.h在根目录
+          ls -lh | grep config.h
+          echo "✅ config.h 验证通过"
 
       - name: Build pcsx_rearmed libretro core (完整参数)
         run: |
@@ -150,6 +166,7 @@ jobs:
           # 彻底清理旧编译产物
           make -f Makefile.libretro clean || rm -f pcsx_rearmed_libretro.so
           # 完整编译参数：指定MIPS动态重编译、GPU、音频等核心模块
+          # 关键：确保在根目录执行make，且CFLAGS包含-I.
           make -f Makefile.libretro \
             PLATFORM=gcw0 \
             ARCH=mipsel \
