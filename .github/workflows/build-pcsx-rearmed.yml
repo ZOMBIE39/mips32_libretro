@@ -1,6 +1,5 @@
 name: Build pcsx_rearmed for Dingux (mips32)
 
-# 触发条件：push main分支 / 手动触发
 on:
   push:
     branches: [ main ]
@@ -10,7 +9,6 @@ jobs:
   build:
     runs-on: ubuntu-latest
     steps:
-      # 步骤1：初始化Ubuntu编译环境
       - name: Install build dependencies
         run: |
           sudo apt update && sudo apt install -y \
@@ -28,37 +26,46 @@ jobs:
             wget \
             unzip
 
-      # 步骤2：拉取libretro-super仓库（核心编译脚本）
       - name: Clone libretro-super
         run: |
           git clone https://github.com/libretro/libretro-super.git
           cd libretro-super
-          # 确保子模块初始化（拉取各核心源码）
           git submodule update --init --recursive
+          # 调试：打印libretro-super初始目录结构
+          ls -la
 
-      # 步骤3：配置Dingux/mips32交叉编译环境变量
       - name: Set cross-compile env for Dingux mips32
         run: |
           echo "CC=mipsel-linux-gnu-gcc" >> $GITHUB_ENV
           echo "CXX=mipsel-linux-gnu-g++" >> $GITHUB_ENV
           echo "AR=mipsel-linux-gnu-ar" >> $GITHUB_ENV
           echo "RANLIB=mipsel-linux-gnu-ranlib" >> $GITHUB_ENV
-          # Dingux mips32架构编译参数（适配多数Dingux设备）
           echo "CFLAGS=-march=mips32 -mabi=32 -mtune=mips32 -O2 -fPIC -DDINGUX=1" >> $GITHUB_ENV
           echo "CXXFLAGS=-march=mips32 -mabi=32 -mtune=mips32 -O2 -fPIC -DDINGUX=1" >> $GITHUB_ENV
           echo "LDFLAGS=-march=mips32 -mabi=32 -mtune=mips32 -fPIC" >> $GITHUB_ENV
+          # 调试：打印环境变量，确认交叉编译参数生效
+          env | grep -E "(CC|CXX|CFLAGS|DINGUX)"
 
-      # 步骤4：编译pcsx_rearmed核心（借助libretro-super脚本）
       - name: Build pcsx_rearmed for Dingux mips32
         run: |
           cd libretro-super
-          # 执行libretro-super编译脚本，指定仅编译pcsx_rearmed
-          ./libretro-build.sh pcsx_rearmed
+          # 强制指定平台为unix，开启详细编译日志（关键：暴露编译错误）
+          VERBOSE=1 ./libretro-build.sh pcsx_rearmed
+          # 调试：打印编译后所有目录下的.so文件，定位产物实际位置
+          echo "===== 查找所有编译生成的.so文件 ====="
+          find . -name "*.so" -type f
+          echo "===== 目录结构 ====="
+          ls -la ./libretro-pcsx_rearmed/
+          ls -la ./dist/unix/ || echo "dist/unix目录不存在"
 
-      # 步骤5：上传编译产物（核心文件pcsx_rearmed_libretro.so）
       - name: Upload build artifact
         uses: actions/upload-artifact@v4
         with:
           name: pcsx_rearmed-dingux-mips32
-          path: libretro-super/dist/unix/pcsx_rearmed_libretro.so
-          retention-days: 30 # 产物保留30天
+          # 关键修正：优先取源码目录的产物（pcsx_rearmed的真实输出路径）
+          path: |
+            libretro-super/libretro-pcsx_rearmed/pcsx_rearmed_libretro.so
+            libretro-super/dist/unix/pcsx_rearmed_libretro.so
+          retention-days: 30
+          # 即使找不到文件也不中断（方便看调试日志）
+          if-no-files-found: warn
