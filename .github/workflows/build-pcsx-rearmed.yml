@@ -23,7 +23,7 @@ jobs:
             rsync \
             autoconf \
             automake \
-            libtool # 补充生成config.h所需的autotools工具
+            libtool
 
       # 步骤1：部署GKD工具链（标准路径）
       - name: Deploy GKD pixel toolchain
@@ -41,21 +41,37 @@ jobs:
           echo "TOOLCHAIN_BIN=$TOOLCHAIN_BIN" >> $GITHUB_ENV
           echo "PATH=$TOOLCHAIN_BIN:$PATH" >> $GITHUB_PATH
 
-      # 步骤2：克隆源码并确保子模块完整（含依赖）
-      - name: Clone libretro-super & fetch pcsx_rearmed
+      # 步骤2：克隆源码（修复路径跳转逻辑，核心！）
+      - name: Clone libretro-super & fetch pcsx_rearmed (fix path)
         run: |
+          # 克隆libretro-super到当前目录
           git clone --depth=1 https://github.com/libretro/libretro-super.git
+          # 进入libretro-super目录（全程不跳出，避免路径混乱）
           cd libretro-super
           # 拉取pcsx_rearmed（含所有子模块依赖）
           if [ ! -d "libretro-pcsx_rearmed" ]; then
             git clone --recursive https://github.com/libretro/pcsx_rearmed.git libretro-pcsx_rearmed
           else
+            # 如果已存在，更新子模块
             cd libretro-pcsx_rearmed
-            git submodule update --init --recursive # 确保依赖子模块（如lightning/lightrec）完整
+            git submodule update --init --recursive
+            # 回到libretro-super目录
+            cd ..
           fi
-          # 验证源码
-          cd ../libretro-pcsx_rearmed
-          [ -f "Makefile.libretro" ] && echo "✅ 源码及依赖完整" || (echo "❌ 源码缺失" && exit 1)
+          # 验证：直接在libretro-super目录下检查pcsx_rearmed是否存在
+          if [ -d "libretro-pcsx_rearmed" ]; then
+            echo "✅ pcsx_rearmed源码目录存在（路径：$(pwd)/libretro-pcsx_rearmed）"
+            # 验证核心文件是否存在
+            if [ -f "libretro-pcsx_rearmed/Makefile.libretro" ]; then
+              echo "✅ pcsx_rearmed核心编译文件存在"
+            else
+              echo "❌ pcsx_rearmed编译文件缺失"
+              exit 1
+            fi
+          else
+            echo "❌ pcsx_rearmed源码目录不存在"
+            exit 1
+          fi
 
       # 步骤3：配置编译环境（对齐default.config）
       - name: Set compile env (GKD Pixel)
@@ -77,12 +93,13 @@ jobs:
       # 步骤4：生成config.h（核心修复步骤）
       - name: Generate config.h for pcsx_rearmed
         run: |
+          # 直接进入正确的源码目录（无路径跳转）
           cd libretro-super/libretro-pcsx_rearmed
-          # 步骤1：生成configure脚本（如果缺失）
+          # 生成configure脚本（如果缺失）
           if [ ! -f "configure" ]; then
             autoreconf -fiv || echo "⚠️ autoreconf警告（非致命），继续"
           fi
-          # 步骤2：运行configure生成config.h（适配GKD工具链）
+          # 运行configure生成config.h
           ./configure \
             --host=mipsel-gcw0-linux-uclibc \
             --prefix=/opt/gcw0-toolchain/target \
@@ -93,9 +110,9 @@ jobs:
             CXX="${{ env.CXX }}" \
             CFLAGS="${{ env.CFLAGS }}" \
             LDFLAGS="${{ env.LDFLAGS }}"
-          # 验证config.h是否生成
+          # 验证config.h
           if [ -f "config.h" ]; then
-            echo "✅ config.h生成成功！"
+            echo "✅ config.h生成成功！路径：$(pwd)/config.h"
             ls -lh config.h
           else
             echo "❌ config.h生成失败"
