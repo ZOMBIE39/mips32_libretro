@@ -1,143 +1,79 @@
-name: Build pcsx_rearmed for GCW0
+name: Build MIPS32 Little-Endian Core
 
+# 触发条件：push 到主分支/标签，或 PR 到主分支
 on:
   push:
-    branches: [ main ]
+    branches: [ main, master ]
+    tags: [ '*' ]
   pull_request:
-    branches: [ main ]
-  workflow_dispatch:
+    branches: [ main, master ]
 
-env:
-  TOOLCHAIN_URL: "https://github.com/game-de-it/GKD_pixel/releases/download/GKDpixel-toolchain-v1/mipsel-gcw0-linux-uclibc_sdk-buildroot.tar.gz"
-  TOOLCHAIN_DIR: "/opt/gcw0-toolchain"
-  
+# 运行环境
 jobs:
-  build:
+  build-mips32el:
     runs-on: ubuntu-latest
-    
     steps:
-    - name: Checkout code
-      uses: actions/checkout@v4
-      
-    - name: Install dependencies
-      run: |
-        sudo apt-get update
-        sudo apt-get install -y \
-          build-essential \
-          git \
-          wget \
-          tar \
-          gzip \
-          bzip2 \
-          python3 \
-          make \
-          cmake \
-          autoconf \
-          automake \
-          libtool \
-          pkg-config \
-          libsdl2-dev \
-          zlib1g-dev \
-          libpng-dev \
-          libvorbis-dev \
-          libflac-dev \
-          libmpg123-dev \
-          nasm
-          
-    - name: Download and setup toolchain
-      run: |
-        sudo mkdir -p /opt
-        sudo chmod 777 /opt
-        
-        cd /opt
-        wget ${{ env.TOOLCHAIN_URL }}
-        
-        tar zxvf mipsel-gcw0-linux-uclibc_sdk-buildroot.tar.gz
-        
-        mv mipsel-gcw0-linux-uclibc_sdk-buildroot gcw0-toolchain
-        
-        cd gcw0-toolchain
-        ./relocate-sdk.sh
-        
-    - name: Set up environment variables
-      run: |
-        echo "CROSS_COMPILE=${{ env.TOOLCHAIN_DIR }}/usr/bin/mipsel-gcw0-linux-uclibc-" >> $GITHUB_ENV
-        echo "SYSROOT=${{ env.TOOLCHAIN_DIR }}/usr/mipsel-gcw0-linux-uclibc/sysroot" >> $GITHUB_ENV
-        echo "CC=${{ env.TOOLCHAIN_DIR }}/usr/bin/mipsel-gcw0-linux-uclibc-gcc" >> $GITHUB_ENV
-        echo "CXX=${{ env.TOOLCHAIN_DIR }}/usr/bin/mipsel-gcw0-linux-uclibc-g++" >> $GITHUB_ENV
-        echo "AR=${{ env.TOOLCHAIN_DIR }}/usr/bin/mipsel-gcw0-linux-uclibc-ar" >> $GITHUB_ENV
-        echo "LD=${{ env.TOOLCHAIN_DIR }}/usr/bin/mipsel-gcw0-linux-uclibc-ld" >> $GITHUB_ENV
-        echo "STRIP=${{ env.TOOLCHAIN_DIR }}/usr/bin/mipsel-gcw0-linux-uclibc-strip" >> $GITHUB_ENV
-        echo "RANLIB=${{ env.TOOLCHAIN_DIR }}/usr/bin/mipsel-gcw0-linux-uclibc-ranlib" >> $GITHUB_ENV
-        
-        echo "CFLAGS=-ffast-math -march=mips32 -mtune=mips32r2 -mhard-float -fdata-sections -ffunction-sections" >> $GITHUB_ENV
-        echo "CXXFLAGS=-ffast-math -march=mips32 -mtune=mips32r2 -mhard-float -fdata-sections -ffunction-sections" >> $GITHUB_ENV
-        echo "LDFLAGS=-Wl,--gc-sections" >> $GITHUB_ENV
-        
-        echo "${{ env.TOOLCHAIN_DIR }}/usr/bin" >> $GITHUB_PATH
-        
-    - name: Clone pcsx_rearmed repository
-      run: |
-        git clone --depth=1 https://github.com/libretro/pcsx_rearmed.git
-        cd pcsx_rearmed
-        
-    - name: Configure pcsx_rearmed
-      run: |
-        cd pcsx_rearmed
-        
-        # 首先运行configure脚本
-        ./configure --platform=libretro
-        
-    - name: Build pcsx_rearmed
-      run: |
-        cd pcsx_rearmed
-        
-        # 设置环境变量
-        export PATH="${{ env.TOOLCHAIN_DIR }}/usr/bin:$PATH"
-        
-        # 使用正确的编译命令
-        # 方法1: 直接使用libretro的Makefile
-        make -f Makefile.libretro platform=gcw0
-        
-    - name: Alternative build method (if above fails)
-      if: failure()
-      run: |
-        cd pcsx_rearmed
-        
-        # 方法2: 使用交叉编译变量
-        make -f Makefile.libretro \
-          CC="${{ env.CC }}" \
-          CXX="${{ env.CXX }}" \
-          AR="${{ env.AR }}" \
-          LD="${{ env.LD }}" \
-          STRIP="${{ env.STRIP }}" \
-          CFLAGS="${{ env.CFLAGS }}" \
-          CXXFLAGS="${{ env.CXXFLAGS }}" \
-          LDFLAGS="${{ env.LDFLAGS }}" \
-          platform=gcw0
-        
-    - name: Check if binary was created
-      run: |
-        cd pcsx_rearmed
-        if [ -f "pcsx_rearmed_libretro.so" ]; then
-          echo "Build successful!"
-          ls -la *.so
-          
-          # 检查文件类型
+      # 1. 拉取仓库源码
+      - name: Checkout Code
+        uses: actions/checkout@v4
+        with:
+          submodules: recursive  # 拉取子模块（依赖库）
+
+      # 2. 安装交叉编译工具链及依赖
+      - name: Install MIPS32el Toolchain
+        run: |
+          sudo apt update && sudo apt install -y \
+            gcc-mipsel-linux-gnu \
+            g++-mipsel-linux-gnu \
+            binutils-mipsel-linux-gnu \
+            make git libtool pkg-config \
+            build-essential
+
+      # 3. 配置交叉编译环境变量
+      - name: Set Compilation Env
+        run: |
+          echo "CROSS_COMPILE=mipsel-linux-gnu-" >> $GITHUB_ENV
+          echo "CC=mipsel-linux-gnu-gcc" >> $GITHUB_ENV
+          echo "CXX=mipsel-linux-gnu-g++" >> $GITHUB_ENV
+          echo "AR=mipsel-linux-gnu-ar" >> $GITHUB_ENV
+          echo "RANLIB=mipsel-linux-gnu-ranlib" >> $GITHUB_ENV
+          # MIPS32el 编译标志（禁用JIT、小端、软浮点）
+          COMMON_FLAGS="-march=mips32 -mlittle-endian -mabi=32 -msoft-float -O2 -fomit-frame-pointer -ffast-math -DNO_JIT=1 -DDRC_DISABLE=1 -DMIPS=1"
+          echo "CFLAGS=$COMMON_FLAGS" >> $GITHUB_ENV
+          echo "CXXFLAGS=$COMMON_FLAGS -fno-rtti -fno-exceptions" >> $GITHUB_ENV
+          echo "ASFLAGS=-march=mips32 -mlittle-endian -mabi=32" >> $GITHUB_ENV
+          echo "LDFLAGS=-march=mips32 -mlittle-endian -mabi=32 -lm" >> $GITHUB_ENV
+
+      # 4. 编译依赖库（zlib）
+      - name: Build Zlib for MIPS32el
+        run: |
+          cd deps/libchdr/deps/zlib-1.3.1/
+          ./configure --prefix=/tmp/mipsel-zlib --arch=mipsel --libdir=/tmp/mipsel-zlib/lib
+          make CC="${{ env.CC }}" CFLAGS="${{ env.CFLAGS }}" LDFLAGS="${{ env.LDFLAGS }}" -j$(nproc)
+          make install
+          cd -
+
+      # 5. 编译依赖库（zstd）
+      - name: Build Zstd for MIPS32el
+        run: |
+          cd deps/libchdr/deps/zstd-1.5.6/
+          make CC="${{ env.CC }}" CFLAGS="${{ env.CFLAGS }}" LDFLAGS="${{ env.LDFLAGS }}" -j$(nproc)
+          cd -
+
+      # 6. 编译 PCSX-ReARMed 核心（libretro 版本）
+      - name: Build PCSX-ReARMed Core
+        run: |
+          # 清理旧产物
+          make -f Makefile.libretro platform=unix clean
+          # 编译核心
+          make -f Makefile.libretro platform=unix -j$(nproc)
+          # 验证产物架构
           file pcsx_rearmed_libretro.so
-          
-          # 检查文件大小
-          du -h pcsx_rearmed_libretro.so
-        else
-          echo "Build failed - no .so file found"
-          # 列出所有文件查看有什么
-          ls -la
-          exit 1
-        fi
-        
-    - name: Upload artifact
-      uses: actions/upload-artifact@v4
-      with:
-        name: pcsx_rearmed-gcw0
-        path: pcsx_rearmed/pcsx_rearmed_libretro.so
-        retention-days: 7
+
+      # 7. 上传编译产物（保留90天）
+      - name: Upload Build Artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: pcsx_rearmed-mips32el-core
+          path: pcsx_rearmed_libretro.so
+          retention-days: 90
