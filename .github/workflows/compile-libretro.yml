@@ -26,18 +26,19 @@ jobs:
           sudo ./relocate-sdk.sh
           sudo chown -R $USER:$USER /opt/gcw0-toolchain
 
-      - name: Set environment variables (关键调整)
+      - name: Set environment variables
         run: |
-          # 导出所有工具链变量到当前shell（替代configure参数）
+          # 导出工具链核心变量
           export CROSS_COMPILE=/opt/gcw0-toolchain/usr/bin/mipsel-gcw0-linux-uclibc-
           export SYSROOT=/opt/gcw0-toolchain/usr/mipsel-gcw0-linux-uclibc/sysroot
-          export CC=/opt/gcw0-toolchain/usr/bin/mipsel-gcw0-linux-uclibc-gcc
-          export CXX=/opt/gcw0-toolchain/usr/bin/mipsel-gcw0-linux-uclibc-g++
-          export AR=/opt/gcw0-toolchain/usr/bin/mipsel-gcw0-linux-uclibc-ar
-          export LD=/opt/gcw0-toolchain/usr/bin/mipsel-gcw0-linux-uclibc-ld
+          export CC=${CROSS_COMPILE}gcc
+          export CXX=${CROSS_COMPILE}g++
+          export AR=${CROSS_COMPILE}ar
+          export LD=${CROSS_COMPILE}ld
           export CFLAGS="-ffast-math -march=mips32 -mtune=mips32r2 -mhard-float -fdata-sections -ffunction-sections --sysroot=${SYSROOT}"
-          export CXXFLAGS="-ffast-math -march=mips32 -mtune=mips32r2 -mhard-float -fdata-sections -ffunction-sections --sysroot=${SYSROOT}"
-          # 将变量写入GITHUB_ENV，后续步骤可用
+          export CXXFLAGS="${CFLAGS}"
+          
+          # 写入环境变量供后续步骤使用
           echo "CROSS_COMPILE=$CROSS_COMPILE" >> $GITHUB_ENV
           echo "SYSROOT=$SYSROOT" >> $GITHUB_ENV
           echo "CC=$CC" >> $GITHUB_ENV
@@ -46,7 +47,6 @@ jobs:
           echo "LD=$LD" >> $GITHUB_ENV
           echo "CFLAGS=$CFLAGS" >> $GITHUB_ENV
           echo "CXXFLAGS=$CXXFLAGS" >> $GITHUB_ENV
-          # 工具链PATH加入环境
           echo "/opt/gcw0-toolchain/usr/bin" >> $GITHUB_PATH
 
       - name: Checkout pcsx_rearmed source code
@@ -56,36 +56,73 @@ jobs:
           path: pcsx_rearmed
           fetch-depth: 1
 
-      - name: Generate config.h (适配自定义configure)
+      - name: Manually generate config.h (跳过有问题的configure)
         run: |
           cd pcsx_rearmed
-          # 关键：使用自定义configure支持的参数，去掉所有不支持的标准参数
-          # --platform=generic：GCW0不在预设列表（pandora/maemo等），用generic
-          # --sound-drivers=none：关闭所有音频驱动（libretro核心不需要）
-          # --dynarec=lightrec：指定轻量级动态重编译器（适配mips）
-          # --gpu=peops：指定GPU插件（适配嵌入式平台）
-          ./configure \
-            --platform=generic \
-            --sound-drivers=none \
-            --dynarec=lightrec \
-            --gpu=peops \
-            --disable-threads  # 关闭多线程（简化嵌入式编译）
-          # 验证config.h是否生成（关键检查）
+          # 手动生成适配GCW0/mipsel的config.h（核心修复）
+          cat > config.h << EOF
+          /* 适配GCW0/mipsel的基础配置 */
+          #define ARCH_MIPS 1
+          #define ARCH_MIPSEL 1
+          #define __mips__ 1
+          #define __mipsel__ 1
+          #define MIPS32 1
+          
+          /* 禁用不需要的功能，适配libretro */
+          #define HAVE_LIBRETRO 1
+          #define DISABLE_THREADS 1
+          #define SOUND_DRIVER_NONE 1
+          #define GPU_PEOPS 1
+          #define DYNAREC_LIGHTREC 1
+          #define DYNAREC_NONE 0
+          #define HAVE_DYNAREC 1
+          
+          /* 工具链相关 */
+          #define SYSROOT "${{ env.SYSROOT }}"
+          #define CROSS_COMPILE "${{ env.CROSS_COMPILE }}"
+          
+          /* 通用编译配置 */
+          #define HAVE_STDINT_H 1
+          #define HAVE_STDLIB_H 1
+          #define HAVE_STRING_H 1
+          #define HAVE_UNISTD_H 1
+          #define HAVE_INTTYPES_H 1
+          #define HAVE_MEMCPY 1
+          #define HAVE_MEMSET 1
+          EOF
+          
+          # 验证config.h是否生成成功
           if [ ! -f config.h ]; then
-            echo "ERROR: config.h未生成！"
+            echo "ERROR: 手动生成config.h失败！"
             exit 1
           fi
+          echo "✅ config.h 手动生成成功"
 
-      - name: Build pcsx_rearmed core (适配GCW0)
+      - name: Build pcsx_rearmed libretro core (GCW0适配)
         run: |
           cd pcsx_rearmed
-          # 清理旧产物
+          # 清理旧编译产物
           make -f Makefile.libretro clean || true
-          # 编译：传递环境变量，指定平台和架构
+          # 核心编译：仅传递必要的平台/架构参数
           make -f Makefile.libretro \
             PLATFORM=unix \
             ARCH=mipsel \
+            HAVE_DYNAREC=1 \
+            GPU=peops \
             -j$(nproc)
+
+      - name: Verify build result
+        run: |
+          cd pcsx_rearmed
+          # 检查编译产物是否存在
+          if [ -f pcsx_rearmed_libretro.so ]; then
+            echo "✅ 编译成功！产物路径：$(pwd)/pcsx_rearmed_libretro.so"
+            # 打印文件信息（验证架构）
+            file pcsx_rearmed_libretro.so
+          else
+            echo "ERROR: 编译产物缺失！"
+            exit 1
+          fi
 
       - name: Upload build artifact
         uses: actions/upload-artifact@v4
