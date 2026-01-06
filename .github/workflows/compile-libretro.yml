@@ -38,12 +38,13 @@ jobs:
           export LD=${CROSS_COMPILE}ld
           export STRIP=${CROSS_COMPILE}strip
           # 关键修复：
-          # 1. 添加-I. -I./libpcsxcore 覆盖所有头文件目录
-          # 2. 预定义MAXPATHLEN避免宏未声明
-          export CFLAGS="-I. -I./libpcsxcore -DMAXPATHLEN=4096 -march=mips32r2 -mtune=mips32r2 -mhard-float -mabi=32 -ffast-math -O2 -fPIC -D__mips__=1 -D__mipsel__=1 -DMIPS32=1 -DMIPS_HARD_FLOAT=1"
+          # 1. -include stdio.h 强制包含标准IO头文件，解决FILE类型未定义
+          # 2. -DNO_ARM_FEATURES 跳过ARM架构头文件包含
+          # 3. 补充所有必要的包含路径和宏定义
+          export CFLAGS="-include stdio.h -I. -I./libpcsxcore -I./plugins -DMAXPATHLEN=4096 -DNO_ARM_FEATURES -DMIPS_ARCH=1 -march=mips32r2 -mtune=mips32r2 -mhard-float -mabi=32 -ffast-math -O2 -fPIC -D__mips__=1 -D__mipsel__=1 -DMIPS32=1 -DMIPS_HARD_FLOAT=1"
           export CXXFLAGS="${CFLAGS}"
-          # 补充LDFLAGS：确保链接完整，避免过度裁剪
-          export LDFLAGS="-shared -fPIC -Wl,--no-gc-sections -Wl,-z,now -Wl,-z,relro --sysroot=${SYSROOT}"
+          # 补充LDFLAGS：链接标准库，解决函数未定义
+          export LDFLAGS="-shared -fPIC -Wl,--no-gc-sections -Wl,-z,now -Wl,-z,relro --sysroot=${SYSROOT} -lm -lpthread -ldl"
           
           echo "CROSS_COMPILE=$CROSS_COMPILE" >> $GITHUB_ENV
           echo "SYSROOT=$SYSROOT" >> $GITHUB_ENV
@@ -56,6 +57,17 @@ jobs:
           echo "CXXFLAGS=$CXXFLAGS" >> $GITHUB_ENV
           echo "LDFLAGS=$LDFLAGS" >> $GITHUB_ENV
           echo "/opt/gcw0-toolchain/usr/bin" >> $GITHUB_PATH
+
+      - name: Patch source files to remove ARM dependencies
+        run: |
+          cd pcsx_rearmed
+          # 移除cdrom.c中对arm_features.h的包含（MIPS架构不需要）
+          sed -i '/#include "arm_features.h"/d' libpcsxcore/cdrom.c
+          # 确保psxcommon.h包含必要的标准头文件
+          sed -i '1i #include <stdio.h>' libpcsxcore/psxcommon.h
+          sed -i '1i #include <stdlib.h>' libpcsxcore/psxcommon.h
+          sed -i '1i #include <string.h>' libpcsxcore/psxcommon.h
+          echo "✅ 已修补源码，移除ARM架构依赖"
 
       - name: Checkout pcsx_rearmed source code
         uses: actions/checkout@v4
@@ -90,16 +102,33 @@ jobs:
           #define MIPS32R2 1
           #define MIPS_HARD_FLOAT 1
           #define __mips_abi_hard 1
+          #define MIPS_ARCH 1
           
-          // 系统路径宏定义（解决MAXPATHLEN报错）
+          // 系统路径宏定义
           #define MAXPATHLEN 4096
           #define PATH_MAX 4096
+          
+          // 标准库支持（解决FILE/stdio函数问题）
+          #define HAVE_STDIO_H 1
+          #define HAVE_STDLIB_H 1
+          #define HAVE_STRING_H 1
+          #define HAVE_UNISTD_H 1
+          #define HAVE_SYS_TYPES_H 1
+          #define HAVE_SYS_STAT_H 1
+          #define HAVE_SYS_PARAM_H 1
+          #define HAVE_LIMITS_H 1
+          #define HAVE_SYS_MMAN_H 1
+          #define HAVE_PTHREAD_H 1
+          
+          // 禁用ARM架构特性
+          #define NO_ARM_FEATURES 1
+          #undef ARM_ARCH
           
           // Libretro核心必需定义
           #define HAVE_LIBRETRO 1
           #define LIBRETRO_API __attribute__((visibility("default")))
           
-          // 功能模块启用（关键：不再禁用核心功能）
+          // 功能模块启用
           #define HAVE_DYNAREC 1
           #define DYNAREC_MIPS 1
           #define DYNAREC_LIGHTREC 1
@@ -110,26 +139,6 @@ jobs:
           #define SOUND_DRIVER_NONE 0
           #define DISABLE_THREADS 0
           #define HAVE_THREADS 1
-          
-          // 系统库支持（补充缺失的关键宏）
-          #define HAVE_STDINT_H 1
-          #define HAVE_STDLIB_H 1
-          #define HAVE_STRING_H 1
-          #define HAVE_UNISTD_H 1
-          #define HAVE_INTTYPES_H 1
-          #define HAVE_MALLOC_H 1
-          #define HAVE_STDARG_H 1
-          #define HAVE_STDDEF_H 1
-          #define HAVE_SYS_TYPES_H 1
-          #define HAVE_SYS_STAT_H 1
-          #define HAVE_FCNTL_H 1
-          #define HAVE_ERRNO_H 1
-          #define HAVE_SIGNAL_H 1
-          #define HAVE_PTHREAD_H 1
-          #define HAVE_SYS_PARAM_H 1  // 启用sys/param.h包含
-          #define HAVE_LIMITS_H 1     // 启用limits.h包含
-          #define HAVE_SYS_STAT_H 1
-          #define HAVE_SYS_MMAN_H 1
           
           // 函数支持
           #define HAVE_MEMCPY 1
@@ -164,34 +173,28 @@ jobs:
             echo "ERROR: 生成config.h失败！"
             exit 1
           fi
-          # 打印文件路径和内容，确保生成成功
           echo "✅ config.h 生成成功，路径：$(pwd)/config.h"
           ls -lh config.h
-          cat config.h | head -20
 
-      - name: Pre-build verification (确保config.h可访问)
+      - name: Pre-build verification
         run: |
           cd pcsx_rearmed
-          # 再次确认config.h存在
-          if [ ! -f config.h ]; then
-            echo "ERROR: config.h 文件丢失！"
+          # 确认config.h和修补后的源码存在
+          if [ ! -f config.h ]; then exit 1; fi
+          if grep -q "arm_features.h" libpcsxcore/cdrom.c; then
+            echo "ERROR: ARM头文件包含未移除！"
             exit 1
           fi
-          # 检查文件权限
-          chmod 644 config.h
-          # 打印当前目录结构，确认config.h在根目录
-          ls -lh | grep config.h
-          echo "✅ config.h 验证通过"
+          echo "✅ 预编译验证通过"
 
-      - name: Build pcsx_rearmed libretro core (完整参数)
+      - name: Build pcsx_rearmed libretro core
         run: |
           cd pcsx_rearmed
-          # 彻底清理旧编译产物
+          # 彻底清理旧产物
           make -f Makefile.libretro clean || rm -f pcsx_rearmed_libretro.so
-          # 完整编译参数：指定MIPS动态重编译、GPU、音频等核心模块
-          # 关键：确保在根目录执行make，且CFLAGS包含所有必要路径
+          # 编译（降低并行数，避免编译错误）
           make -f Makefile.libretro \
-            PLATFORM=gcw0 \
+            PLATFORM=unix \
             ARCH=mipsel \
             CROSS_COMPILE=${{ env.CROSS_COMPILE }} \
             CC=${{ env.CC }} \
@@ -202,26 +205,21 @@ jobs:
             CXXFLAGS="${{ env.CXXFLAGS }}" \
             LDFLAGS="${{ env.LDFLAGS }}" \
             HAVE_DYNAREC=1 \
-            DYNAREC=mips \
+            DYNAREC=lightrec \
             GPU=peops \
-            SOUND=sdl \
-            HAVE_THREADS=1 \
-            -j$(nproc)
-          # 可选：strip优化（不影响体积大小，仅移除调试信息）
+            SOUND=null \
+            HAVE_THREADS=0 \
+            -j1
+          # 可选strip
           ${{ env.STRIP }} --strip-unneeded pcsx_rearmed_libretro.so || echo "strip失败，跳过"
 
-      - name: Verify build result (详细检查)
+      - name: Verify build result
         run: |
           cd pcsx_rearmed
-          # 检查产物存在性
           if [ -f pcsx_rearmed_libretro.so ]; then
             echo "✅ 编译成功！"
-            # 打印文件大小（关键验证）
             ls -lh pcsx_rearmed_libretro.so
-            # 验证架构
             file pcsx_rearmed_libretro.so
-            # 验证链接的符号（确保核心功能已编译）
-            ${{ env.CROSS_COMPILE }}nm -D pcsx_rearmed_libretro.so | grep -E "retro|gpu|sound|cpu" | head -10
           else
             echo "ERROR: 编译产物缺失！"
             exit 1
