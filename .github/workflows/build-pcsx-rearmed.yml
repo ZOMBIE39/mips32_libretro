@@ -41,99 +41,75 @@ jobs:
           echo "TOOLCHAIN_BIN=$TOOLCHAIN_BIN" >> $GITHUB_ENV
           echo "PATH=$TOOLCHAIN_BIN:$PATH" >> $GITHUB_PATH
 
-      # 步骤2：克隆源码（修复路径跳转逻辑，核心！）
-      - name: Clone libretro-super & fetch pcsx_rearmed (fix path)
+      # 步骤2：克隆源码（修复路径逻辑）
+      - name: Clone libretro-super & fetch pcsx_rearmed
         run: |
-          # 克隆libretro-super到当前目录
           git clone --depth=1 https://github.com/libretro/libretro-super.git
-          # 进入libretro-super目录（全程不跳出，避免路径混乱）
           cd libretro-super
-          # 拉取pcsx_rearmed（含所有子模块依赖）
+          # 拉取pcsx_rearmed（含子模块）
           if [ ! -d "libretro-pcsx_rearmed" ]; then
             git clone --recursive https://github.com/libretro/pcsx_rearmed.git libretro-pcsx_rearmed
           else
-            # 如果已存在，更新子模块
             cd libretro-pcsx_rearmed
             git submodule update --init --recursive
-            # 回到libretro-super目录
             cd ..
           fi
-          # 验证：直接在libretro-super目录下检查pcsx_rearmed是否存在
-          if [ -d "libretro-pcsx_rearmed" ]; then
-            echo "✅ pcsx_rearmed源码目录存在（路径：$(pwd)/libretro-pcsx_rearmed）"
-            # 验证核心文件是否存在
-            if [ -f "libretro-pcsx_rearmed/Makefile.libretro" ]; then
-              echo "✅ pcsx_rearmed核心编译文件存在"
-            else
-              echo "❌ pcsx_rearmed编译文件缺失"
-              exit 1
-            fi
+          # 验证源码
+          if [ -f "libretro-pcsx_rearmed/Makefile.libretro" ]; then
+            echo "✅ 源码及编译文件存在"
           else
-            echo "❌ pcsx_rearmed源码目录不存在"
+            echo "❌ 编译文件缺失"
             exit 1
           fi
 
-      # 步骤3：配置编译环境（对齐default.config）
+      # 步骤3：配置编译环境（通过环境变量传递，核心！）
       - name: Set compile env (GKD Pixel)
         run: |
-          # 编译器配置
+          # 1. 编译器配置（通过环境变量传递，而非configure参数）
+          echo "CROSS_COMPILE=mipsel-gcw0-linux-uclibc-" >> $GITHUB_ENV
           echo "CC=mipsel-gcw0-linux-uclibc-gcc" >> $GITHUB_ENV
           echo "CXX=mipsel-gcw0-linux-uclibc-g++" >> $GITHUB_ENV
           echo "AR=mipsel-gcw0-linux-uclibc-ar" >> $GITHUB_ENV
           echo "RANLIB=mipsel-gcw0-linux-uclibc-ranlib" >> $GITHUB_ENV
           echo "STRIP=mipsel-gcw0-linux-uclibc-strip" >> $GITHUB_ENV
           
-          # 核心编译参数（含sysroot）
+          # 2. 核心编译参数（GKD Pixel适配，通过环境变量传递）
           BASE_CFLAGS="-mips32 -mtune=mips32r2 -mhard-float -ffast-math -fomit-frame-pointer -O2 -fPIC -DDINGUX=1 -DGCW0=1 -DGKD_PIXEL=1"
           SYSROOT="--sysroot=/opt/gcw0-toolchain/target"
           echo "CFLAGS=$BASE_CFLAGS $SYSROOT" >> $GITHUB_ENV
           echo "CXXFLAGS=$BASE_CFLAGS $SYSROOT" >> $GITHUB_ENV
           echo "LDFLAGS=-mips32 -mtune=mips32r2 -mhard-float -fPIC -static-libgcc -Wl,--gc-sections $SYSROOT" >> $GITHUB_ENV
+          echo "LDLIBS=-lpthread -lm -ldl" >> $GITHUB_ENV # 补充链接依赖
 
-      # 步骤4：生成config.h（核心修复步骤）
-      - name: Generate config.h for pcsx_rearmed
+      # 步骤4：生成config.h（适配自定义configure脚本）
+      - name: Generate config.h for pcsx_rearmed (custom configure)
         run: |
-          # 直接进入正确的源码目录（无路径跳转）
           cd libretro-super/libretro-pcsx_rearmed
-          # 生成configure脚本（如果缺失）
-          if [ ! -f "configure" ]; then
-            autoreconf -fiv || echo "⚠️ autoreconf警告（非致命），继续"
-          fi
-          # 运行configure生成config.h
+          # 关键：只使用pcsx_rearmed支持的configure参数，编译参数通过环境变量传递
           ./configure \
-            --host=mipsel-gcw0-linux-uclibc \
-            --prefix=/opt/gcw0-toolchain/target \
-            --disable-sdl \
-            --disable-alsa \
-            --enable-libretro \
-            CC="${{ env.CC }}" \
-            CXX="${{ env.CXX }}" \
-            CFLAGS="${{ env.CFLAGS }}" \
-            LDFLAGS="${{ env.LDFLAGS }}"
-          # 验证config.h
+            --platform=dingux \          # 目标平台：dingux（GKD Pixel属于dingux）
+            --gpu=peops \                # GPU插件：peops（适配mips32）
+            --dynarec=lightrec \         # 动态重编译器：lightrec（适配GKD）
+            --disable-threads \          # 禁用线程（dingux简化版）
+            --disable-dynamic            # 禁用动态插件（适配嵌入式）
+          
+          # 验证config.h是否生成
           if [ -f "config.h" ]; then
-            echo "✅ config.h生成成功！路径：$(pwd)/config.h"
-            ls -lh config.h
+            echo "✅ config.h生成成功！"
+            cat config.h | grep -E "(DINGUX|GCW0|GKD_PIXEL)" # 验证宏定义是否生效
           else
             echo "❌ config.h生成失败"
             exit 1
           fi
 
-      # 步骤5：编译pcsx_rearmed（带config.h）
+      # 步骤5：编译pcsx_rearmed（适配自定义配置）
       - name: Build pcsx_rearmed (GKD Pixel)
         run: |
           cd libretro-super/libretro-pcsx_rearmed
           # 清理旧产物
           make -f Makefile.libretro clean || true
-          # 手动编译（指定完整参数）
+          # 手动编译：依赖环境变量中的编译参数，无需额外传参
           VERBOSE=1 make -f Makefile.libretro \
-            CC="${{ env.CC }}" \
-            CXX="${{ env.CXX }}" \
-            AR="${{ env.AR }}" \
-            RANLIB="${{ env.RANLIB }}" \
-            CFLAGS="${{ env.CFLAGS }}" \
-            CXXFLAGS="${{ env.CXXFLAGS }}" \
-            LDFLAGS="${{ env.LDFLAGS }}" \
             platform=dingux \
             ARCH=mipsel \
             DYNAREC=lightrec
