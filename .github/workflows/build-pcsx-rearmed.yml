@@ -1,58 +1,64 @@
-name: Build MIPS32 Little-Endian Core
+name: Build pcsx_rearmed for Dingux (mips32)
 
-# 触发条件：推送到主分支/特定分支、或PR指向这些分支时触发
+# 触发条件：push main分支 / 手动触发
 on:
   push:
-    branches: [ main, master, dev ]
-  pull_request:
-    branches: [ main, master, dev ]
+    branches: [ main ]
+  workflow_dispatch:
 
-# 运行环境和作业定义
 jobs:
-  build-mips32el:
+  build:
     runs-on: ubuntu-latest
     steps:
-      # 步骤1：检出代码（包含子模块，因为pcsx_rearmed有很多deps子模块）
-      - name: Checkout source code
-        uses: actions/checkout@v4
-        with:
-          submodules: recursive  # 拉取所有子模块（deps/libchdr、deps/lightning等）
-
-      # 步骤2：安装MIPS32小端交叉编译工具链和依赖
-      - name: Install cross-compile toolchain & dependencies
+      # 步骤1：初始化Ubuntu编译环境
+      - name: Install build dependencies
         run: |
-          sudo apt update
-          # 安装MIPS32el交叉编译工具链（gcc-mipsel-linux-gnu）
-          sudo apt install -y gcc-mipsel-linux-gnu g++-mipsel-linux-gnu \
-                              make git cmake pkg-config libsdl2-dev
+          sudo apt update && sudo apt install -y \
+            git \
+            build-essential \
+            gcc-mipsel-linux-gnu \
+            g++-mipsel-linux-gnu \
+            libtool \
+            autoconf \
+            automake \
+            pkg-config \
+            make \
+            cmake \
+            python3 \
+            wget \
+            unzip
 
-      # 步骤3：配置交叉编译环境，编译pcsx_rearmed
-      - name: Cross compile for MIPS32 little-endian
+      # 步骤2：拉取libretro-super仓库（核心编译脚本）
+      - name: Clone libretro-super
         run: |
-          # 定义交叉编译前缀（MIPS32小端工具链前缀）
-          export CROSS_COMPILE=mipsel-linux-gnu-
-          export CC=${CROSS_COMPILE}gcc
-          export CXX=${CROSS_COMPILE}g++
-          export AR=${CROSS_COMPILE}ar
-          export LD=${CROSS_COMPILE}ld
+          git clone https://github.com/libretro/libretro-super.git
+          cd libretro-super
+          # 确保子模块初始化（拉取各核心源码）
+          git submodule update --init --recursive
 
-          # 针对pcsx_rearmed的编译参数（适配MIPS32小端）
-          # 注意：需根据pcsx_rearmed的Makefile调整PLATFORM/ARCH等参数
-          cd pcsx_rearmed  # 若配置文件在根目录则无需cd
-          make clean
-          make \
-            PLATFORM=generic \
-            ARCH=mips32el \
-            CFLAGS="-mips32 -EL -mabi=32 -O2" \
-            LDFLAGS="-mips32 -EL" \
-            -j$(nproc)
+      # 步骤3：配置Dingux/mips32交叉编译环境变量
+      - name: Set cross-compile env for Dingux mips32
+        run: |
+          echo "CC=mipsel-linux-gnu-gcc" >> $GITHUB_ENV
+          echo "CXX=mipsel-linux-gnu-g++" >> $GITHUB_ENV
+          echo "AR=mipsel-linux-gnu-ar" >> $GITHUB_ENV
+          echo "RANLIB=mipsel-linux-gnu-ranlib" >> $GITHUB_ENV
+          # Dingux mips32架构编译参数（适配多数Dingux设备）
+          echo "CFLAGS=-march=mips32 -mabi=32 -mtune=mips32 -O2 -fPIC -DDINGUX=1" >> $GITHUB_ENV
+          echo "CXXFLAGS=-march=mips32 -mabi=32 -mtune=mips32 -O2 -fPIC -DDINGUX=1" >> $GITHUB_ENV
+          echo "LDFLAGS=-march=mips32 -mabi=32 -mtune=mips32 -fPIC" >> $GITHUB_ENV
 
-      # 步骤4：上传编译产物（核心文件）
+      # 步骤4：编译pcsx_rearmed核心（借助libretro-super脚本）
+      - name: Build pcsx_rearmed for Dingux mips32
+        run: |
+          cd libretro-super
+          # 执行libretro-super编译脚本，指定仅编译pcsx_rearmed
+          ./libretro-build.sh pcsx_rearmed
+
+      # 步骤5：上传编译产物（核心文件pcsx_rearmed_libretro.so）
       - name: Upload build artifact
         uses: actions/upload-artifact@v4
         with:
-          name: pcsx_rearmed-mips32el-core
-          # 指定编译后的核心文件路径（需根据实际编译产物调整）
-          path: |
-            pcsx_rearmed/pcsx_rearmed.elf  # 示例产物路径，以实际为准
-            pcsx_rearmed/libretro.so        # 若编译libretro核心，补充路径
+          name: pcsx_rearmed-dingux-mips32
+          path: libretro-super/dist/unix/pcsx_rearmed_libretro.so
+          retention-days: 30 # 产物保留30天
