@@ -65,7 +65,7 @@ jobs:
           path: pcsx_rearmed
           fetch-depth: 0  # 关键：完整克隆，获取git版本信息（避免revision.h生成失败）
 
-      - name: Patch source files to remove ARM dependencies
+      - name: Patch source files to remove ARM dependencies and fix REV macro
         run: |
           # 先验证目录存在性
           if [ ! -d "pcsx_rearmed" ]; then
@@ -79,25 +79,28 @@ jobs:
           sed -i '1i #include <stdio.h>' libpcsxcore/psxcommon.h
           sed -i '1i #include <stdlib.h>' libpcsxcore/psxcommon.h
           sed -i '1i #include <string.h>' libpcsxcore/psxcommon.h
-          echo "✅ 已修补源码，移除ARM架构依赖"
+          # ========== 新增：修复misc.c中的REV宏引用 ==========
+          # 将REV替换为GIT_VERSION（兼容宏定义）
+          sed -i 's/REV/GIT_VERSION/g' libpcsxcore/misc.c
+          echo "✅ 已修补源码：移除ARM依赖 + 修复REV宏引用"
 
-      # ========== 新增：手动生成revision.h文件 ==========
-      - name: Generate missing revision.h file
+      - name: Generate missing revision.h file (补充REV宏定义)
         run: |
           cd pcsx_rearmed
           # 创建include目录（如果不存在）
           mkdir -p include
-          # 手动生成revision.h，包含基础版本定义（避免编译报错）
+          # 手动生成revision.h，包含REV宏定义（核心修复）
           cat > include/revision.h << EOF
           #ifndef REVISION_H
           #define REVISION_H
-          #define GIT_VERSION "32e2193"
+          #define GIT_VERSION "32e2193b"
+          #define REV GIT_VERSION  // 关键：添加REV宏，匹配源码引用
           #define BUILD_DATE "__DATE__ __TIME__"
           #endif // REVISION_H
           EOF
           # 同时在源码根目录也生成一份（兼容不同的包含路径）
           cp include/revision.h ./revision.h
-          echo "✅ 已手动生成revision.h文件"
+          echo "✅ 已手动生成revision.h文件（包含REV宏定义）"
 
       - name: Verify critical header files exist
         run: |
@@ -110,11 +113,12 @@ jobs:
             # 如果找到则复制到libpcsxcore目录
             find . -name "psemu_plugin_defs.h" -type f -exec cp {} libpcsxcore/ \;
           fi
-          # 验证revision.h是否存在
+          # 验证revision.h是否存在且包含REV宏
           if [ ! -f include/revision.h ] || [ ! -f revision.h ]; then
             echo "ERROR: revision.h生成失败！"
             exit 1
           fi
+          grep -q "REV" include/revision.h || echo "WARNING: revision.h中未找到REV宏定义"
           ls -lh libpcsxcore/psemu_plugin_defs.h include/revision.h revision.h || echo "部分头文件缺失，继续尝试编译"
 
       - name: Generate complete config.h (补充核心宏定义)
@@ -212,6 +216,8 @@ jobs:
           if grep -q "arm_features.h" libpcsxcore/cdrom.c; then
             echo "WARNING: ARM头文件包含未移除，但继续执行"
           fi
+          # 验证misc.c中的REV已替换为GIT_VERSION
+          grep -q "REV" libpcsxcore/misc.c && echo "WARNING: misc.c中仍存在REV引用" || echo "✅ misc.c中REV已替换为GIT_VERSION"
           echo "✅ 预编译验证通过"
 
       - name: Build pcsx_rearmed libretro core
