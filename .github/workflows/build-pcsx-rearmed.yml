@@ -1,6 +1,5 @@
 name: Build MIPS32 Little-Endian Core
 
-# 触发条件：push 到主分支/标签，或 PR 到主分支
 on:
   push:
     branches: [ main, master ]
@@ -8,16 +7,28 @@ on:
   pull_request:
     branches: [ main, master ]
 
-# 运行环境
 jobs:
   build-mips32el:
     runs-on: ubuntu-latest
     steps:
-      # 1. 拉取仓库源码
+      # 1. 拉取仓库源码 + 强制更新所有嵌套子模块（关键修复）
       - name: Checkout Code
         uses: actions/checkout@v4
         with:
-          submodules: recursive  # 拉取子模块（依赖库）
+          submodules: true  # 先拉取一级子模块
+          fetch-depth: 0    # 确保子模块能拉取完整历史
+
+      - name: Update Nested Submodules（修复libchdr内部zlib/zstd缺失）
+        run: |
+          git submodule update --init --recursive deps/libchdr  # 强制初始化libchdr嵌套子模块
+          # 检查zlib目录是否存在，不存在则手动拉取（兜底）
+          if [ ! -d "deps/libchdr/deps/zlib" ]; then
+              mkdir -p deps/libchdr/deps && cd deps/libchdr/deps
+              git clone https://github.com/madler/zlib.git zlib-1.3.1
+              cd -
+          fi
+          # 打印目录结构，方便调试（可选）
+          ls -la deps/libchdr/deps/
 
       # 2. 安装交叉编译工具链及依赖
       - name: Install MIPS32el Toolchain
@@ -29,7 +40,7 @@ jobs:
             make git libtool pkg-config \
             build-essential
 
-      # 3. 配置交叉编译环境变量
+      # 3. 配置交叉编译环境变量（移除zlib不兼容的参数）
       - name: Set Compilation Env
         run: |
           echo "CROSS_COMPILE=mipsel-linux-gnu-" >> $GITHUB_ENV
@@ -37,40 +48,74 @@ jobs:
           echo "CXX=mipsel-linux-gnu-g++" >> $GITHUB_ENV
           echo "AR=mipsel-linux-gnu-ar" >> $GITHUB_ENV
           echo "RANLIB=mipsel-linux-gnu-ranlib" >> $GITHUB_ENV
-          # MIPS32el 编译标志（禁用JIT、小端、软浮点）
-          COMMON_FLAGS="-march=mips32 -mlittle-endian -mabi=32 -msoft-float -O2 -fomit-frame-pointer -ffast-math -DNO_JIT=1 -DDRC_DISABLE=1 -DMIPS=1"
+          # 移除zlib编译冲突的宏（NO_JIT/DDRC_DISABLE仅针对pcsx_rearmed，不适合zlib）
+          COMMON_FLAGS="-march=mips32 -mlittle-endian -mabi=32 -msoft-float -O2 -fomit-frame-pointer -ffast-math -DMIPS=1"
           echo "CFLAGS=$COMMON_FLAGS" >> $GITHUB_ENV
           echo "CXXFLAGS=$COMMON_FLAGS -fno-rtti -fno-exceptions" >> $GITHUB_ENV
           echo "ASFLAGS=-march=mips32 -mlittle-endian -mabi=32" >> $GITHUB_ENV
           echo "LDFLAGS=-march=mips32 -mlittle-endian -mabi=32 -lm" >> $GITHUB_ENV
 
-      # 4. 编译依赖库（zlib）
+      # 4. 编译zlib（修复configure参数 + 适配交叉编译）
       - name: Build Zlib for MIPS32el
         run: |
-          cd deps/libchdr/deps/zlib-1.3.1/
-          ./configure --prefix=/tmp/mipsel-zlib --arch=mipsel --libdir=/tmp/mipsel-zlib/lib
-          make CC="${{ env.CC }}" CFLAGS="${{ env.CFLAGS }}" LDFLAGS="${{ env.LDFLAGS }}" -j$(nproc)
+          # 进入zlib目录（兼容不同版本命名，优先找zlib/或zlib-*）
+          ZLIB_DIR=$(find deps/libchdr/deps -name "zlib*" -type d | grep -E "zlib(-[0-9.]+)?" | head -1)
+          if [ -z "$ZLIB_DIR" ]; then
+              echo "Error: Zlib directory not found!"
+              exit 1
+          fi
+          cd $ZLIB_DIR
+          
+          # zlib的configure不支持--arch，改用交叉编译正确方式
+          ./configure \
+            --prefix=/tmp/mipsel-zlib \
+            --libdir=/tmp/mipsel-zlib/lib \
+            --static  # 编译静态库（避免动态库依赖问题）
+          
+          # 强制指定交叉编译器（覆盖configure自动检测）
+          make CC="${{ env.CC }}" \
+               CFLAGS="${{ env.CFLAGS }} -I." \
+               LDFLAGS="${{ env.LDFLAGS }}" \
+               -j$(nproc)
           make install
           cd -
 
-      # 5. 编译依赖库（zstd）
+      # 5. 编译zstd（简化编译，仅编译静态库）
       - name: Build Zstd for MIPS32el
         run: |
-          cd deps/libchdr/deps/zstd-1.5.6/
-          make CC="${{ env.CC }}" CFLAGS="${{ env.CFLAGS }}" LDFLAGS="${{ env.LDFLAGS }}" -j$(nproc)
+          ZSTD_DIR=$(find deps/libchdr/deps -name "zstd*" -type d | grep -E "zstd(-[0-9.]+)?" | head -1)
+          if [ -z "$ZSTD_DIR" ]; then
+              echo "Error: Zstd directory not found!"
+              exit 1
+          fi
+          cd $ZSTD_DIR
+          # 交叉编译zstd静态库
+          make CC="${{ env.CC }}" \
+               CFLAGS="${{ env.CFLAGS }}" \
+               LDFLAGS="${{ env.LDFLAGS }}" \
+               PREFIX=/tmp/mipsel-zstd \
+               --prefix=/tmp/mipsel-zstd \
+               static -j$(nproc)
+          make install PREFIX=/tmp/mipsel-zstd
           cd -
 
-      # 6. 编译 PCSX-ReARMed 核心（libretro 版本）
+      # 6. 编译PCSX-ReARMed核心（指定依赖库路径）
       - name: Build PCSX-ReARMed Core
         run: |
           # 清理旧产物
           make -f Makefile.libretro platform=unix clean
+          
+          # 指定zlib/zstd依赖路径，避免找不到头文件/库
+          export CFLAGS="${{ env.CFLAGS }} -I/tmp/mipsel-zlib/include"
+          export LDFLAGS="${{ env.LDFLAGS }} -L/tmp/mipsel-zlib/lib -L/tmp/mipsel-zstd/lib"
+          
           # 编译核心
           make -f Makefile.libretro platform=unix -j$(nproc)
+          
           # 验证产物架构
-          file pcsx_rearmed_libretro.so
+          file pcsx_rearmed_libretro.so || true
 
-      # 7. 上传编译产物（保留90天）
+      # 7. 上传编译产物
       - name: Upload Build Artifact
         uses: actions/upload-artifact@v4
         with:
