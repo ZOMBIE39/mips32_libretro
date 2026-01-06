@@ -82,6 +82,7 @@ jobs:
         git submodule update --init --recursive
         
     - name: Build pcsx_rearmed (方法1: 使用libretro)
+      id: build_libretro
       run: |
         cd pcsx_rearmed_src
         
@@ -138,7 +139,7 @@ EOF
         ./build_libretro.sh
         
     - name: Build pcsx_rearmed (方法2: 使用常规Makefile)
-      if: failure()
+      if: steps.build_libretro.outcome == 'failure'
       run: |
         cd pcsx_rearmed_src
         
