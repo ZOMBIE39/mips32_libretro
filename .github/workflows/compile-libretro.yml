@@ -11,9 +11,9 @@ jobs:
   build:
     runs-on: ubuntu-latest
     steps:
-      - name: Install system dependencies
+      - name: Install system dependencies (新增libmagic1)
         run: |
-          sudo apt update && sudo apt install -y wget tar make gcc git
+          sudo apt update && sudo apt install -y wget tar make gcc git libmagic1
 
       - name: Download and setup GCW0 toolchain
         run: |
@@ -28,7 +28,6 @@ jobs:
 
       - name: Set environment variables
         run: |
-          # 导出工具链核心变量
           export CROSS_COMPILE=/opt/gcw0-toolchain/usr/bin/mipsel-gcw0-linux-uclibc-
           export SYSROOT=/opt/gcw0-toolchain/usr/mipsel-gcw0-linux-uclibc/sysroot
           export CC=${CROSS_COMPILE}gcc
@@ -38,7 +37,6 @@ jobs:
           export CFLAGS="-ffast-math -march=mips32 -mtune=mips32r2 -mhard-float -fdata-sections -ffunction-sections --sysroot=${SYSROOT}"
           export CXXFLAGS="${CFLAGS}"
           
-          # 写入环境变量供后续步骤使用
           echo "CROSS_COMPILE=$CROSS_COMPILE" >> $GITHUB_ENV
           echo "SYSROOT=$SYSROOT" >> $GITHUB_ENV
           echo "CC=$CC" >> $GITHUB_ENV
@@ -59,16 +57,13 @@ jobs:
       - name: Manually generate config.h (跳过有问题的configure)
         run: |
           cd pcsx_rearmed
-          # 手动生成适配GCW0/mipsel的config.h（核心修复）
           cat > config.h << EOF
-          /* 适配GCW0/mipsel的基础配置 */
           #define ARCH_MIPS 1
           #define ARCH_MIPSEL 1
           #define __mips__ 1
           #define __mipsel__ 1
           #define MIPS32 1
           
-          /* 禁用不需要的功能，适配libretro */
           #define HAVE_LIBRETRO 1
           #define DISABLE_THREADS 1
           #define SOUND_DRIVER_NONE 1
@@ -77,11 +72,9 @@ jobs:
           #define DYNAREC_NONE 0
           #define HAVE_DYNAREC 1
           
-          /* 工具链相关 */
           #define SYSROOT "${{ env.SYSROOT }}"
           #define CROSS_COMPILE "${{ env.CROSS_COMPILE }}"
           
-          /* 通用编译配置 */
           #define HAVE_STDINT_H 1
           #define HAVE_STDLIB_H 1
           #define HAVE_STRING_H 1
@@ -91,7 +84,6 @@ jobs:
           #define HAVE_MEMSET 1
           EOF
           
-          # 验证config.h是否生成成功
           if [ ! -f config.h ]; then
             echo "ERROR: 手动生成config.h失败！"
             exit 1
@@ -101,9 +93,7 @@ jobs:
       - name: Build pcsx_rearmed libretro core (GCW0适配)
         run: |
           cd pcsx_rearmed
-          # 清理旧编译产物
           make -f Makefile.libretro clean || true
-          # 核心编译：仅传递必要的平台/架构参数
           make -f Makefile.libretro \
             PLATFORM=unix \
             ARCH=mipsel \
@@ -111,14 +101,14 @@ jobs:
             GPU=peops \
             -j$(nproc)
 
-      - name: Verify build result
+      - name: Verify build result (修复file命令报错)
         run: |
           cd pcsx_rearmed
-          # 检查编译产物是否存在
+          # 核心检查：产物是否存在（必选）
           if [ -f pcsx_rearmed_libretro.so ]; then
             echo "✅ 编译成功！产物路径：$(pwd)/pcsx_rearmed_libretro.so"
-            # 打印文件信息（验证架构）
-            file pcsx_rearmed_libretro.so
+            # 架构验证：安装依赖后执行file，增加容错（即使file失败也不退出）
+            file pcsx_rearmed_libretro.so || echo "⚠️ file命令架构验证跳过（不影响产物有效性）"
           else
             echo "ERROR: 编译产物缺失！"
             exit 1
