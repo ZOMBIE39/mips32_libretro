@@ -67,10 +67,12 @@ jobs:
           path: pcsx_rearmed
           fetch-depth: 1
 
-      - name: Manually generate config.h (完善宏定义)
+      - name: Prepare build environment (先clean再生成config.h)
         run: |
           cd pcsx_rearmed
-          # 补充关键宏，确保所有核心模块被编译
+          # 第一步：清理所有旧产物（包括可能残留的config.h）
+          make -f Makefile.libretro clean || true
+          # 第二步：重新生成config.h（clean之后生成，避免被删除）
           cat > config.h << EOF
           /* 架构宏（完整） */
           #define ARCH_MIPS 1
@@ -125,17 +127,23 @@ jobs:
           #define _GNU_SOURCE 1
           EOF
           
+          # 验证config.h是否生成成功（关键）
           if [ ! -f config.h ]; then
             echo "ERROR: 手动生成config.h失败！"
             exit 1
           fi
-          echo "✅ config.h 手动生成成功（完整宏定义）"
+          # 确保config.h权限正确，编译器可读取
+          chmod 644 config.h
+          echo "✅ config.h 手动生成成功（clean后重新生成）"
 
       - name: Build pcsx_rearmed libretro core (完整编译参数)
         run: |
           cd pcsx_rearmed
-          # 清理所有旧产物
-          make -f Makefile.libretro clean
+          # 确认config.h存在后再编译
+          if [ ! -f config.h ]; then
+            echo "ERROR: config.h缺失，编译终止！"
+            exit 1
+          fi
           # 显式传递所有编译/链接参数，确保完整编译
           make -f Makefile.libretro \
             PLATFORM=unix \
