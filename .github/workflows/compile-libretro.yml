@@ -1,303 +1,91 @@
-name: Build pcsx_rearmed for GCW0 (mipsel)
+name: Build pcsx_rearmed for GCW0
 
 on:
-  workflow_dispatch:
   push:
-    branches: [ main ]
+    branches: [ main, master ]
   pull_request:
-    branches: [ main ]
+    branches: [ main, master ]
+  workflow_dispatch:  # 允许手动触发
 
 jobs:
   build:
     runs-on: ubuntu-latest
+    
     steps:
-      - name: Install system dependencies
-        run: |
-          sudo apt update && sudo apt install -y \
-            wget tar make gcc git \
-            libmagic1 libtool autoconf automake pkg-config \
-            libglib2.0-dev libsdl1.2-dev zlib1g-dev
-
-      - name: Download and setup GCW0 toolchain
-        run: |
-          sudo mkdir -p /opt
-          wget https://github.com/game-de-it/GKD_pixel/releases/download/GKDpixel-toolchain-v1/mipsel-gcw0-linux-uclibc_sdk-buildroot.tar.gz -O /tmp/toolchain.tar.gz
-          sudo tar zxvf /tmp/toolchain.tar.gz -C /opt/
-          sudo mv /opt/mipsel-gcw0-linux-uclibc_sdk-buildroot /opt/gcw0-toolchain
-          cd /opt/gcw0-toolchain
-          sudo chmod +x relocate-sdk.sh
-          sudo ./relocate-sdk.sh
-          sudo chown -R $USER:$USER /opt/gcw0-toolchain
-
-      - name: Set environment variables
-        run: |
-          export TOOLCHAIN_PATH=/opt/gcw0-toolchain/usr
-          export CROSS_COMPILE=${TOOLCHAIN_PATH}/bin/mipsel-gcw0-linux-uclibc-
-          export SYSROOT=${TOOLCHAIN_PATH}/mipsel-gcw0-linux-uclibc/sysroot
-          export PATH=${TOOLCHAIN_PATH}/bin:${PATH}
-          export CC=${CROSS_COMPILE}gcc
-          export CXX=${CROSS_COMPILE}g++
-          export AR=${CROSS_COMPILE}ar
-          export LD=${CROSS_COMPILE}ld
-          export STRIP=${CROSS_COMPILE}strip
-          export RANLIB=${CROSS_COMPILE}ranlib
-          export PKG_CONFIG_SYSROOT_DIR=${SYSROOT}
-          export PKG_CONFIG_PATH=${SYSROOT}/usr/lib/pkgconfig
-          export CFLAGS="-march=mips32 -mtune=mips32r2 -mhard-float -O2 -ffast-math -fdata-sections -ffunction-sections -I${SYSROOT}/usr/include"
-          export CXXFLAGS="${CFLAGS}"
-          export LDFLAGS="-L${SYSROOT}/usr/lib -Wl,--gc-sections"
-          export LIBS="-lz -lm"
+    - name: Checkout repository
+      uses: actions/checkout@v4
+      
+    - name: Install dependencies
+      run: |
+        sudo apt-get update
+        sudo apt-get install -y \
+          build-essential \
+          git \
+          wget \
+          tar \
+          gzip \
+          libsdl1.2-dev \
+          libsdl2-dev \
+          zlib1g-dev \
+          libpng-dev \
+          libvorbis-dev \
+          libflac-dev \
+          libmpg123-dev \
+          libmad0-dev
           
-          echo "TOOLCHAIN_PATH=$TOOLCHAIN_PATH" >> $GITHUB_ENV
-          echo "CROSS_COMPILE=$CROSS_COMPILE" >> $GITHUB_ENV
-          echo "SYSROOT=$SYSROOT" >> $GITHUB_ENV
-          echo "CC=$CC" >> $GITHUB_ENV
-          echo "CXX=$CXX" >> $GITHUB_ENV
-          echo "AR=$AR" >> $GITHUB_ENV
-          echo "LD=$LD" >> $GITHUB_ENV
-          echo "STRIP=$STRIP" >> $GITHUB_ENV
-          echo "CFLAGS=$CFLAGS" >> $GITHUB_ENV
-          echo "CXXFLAGS=$CXXFLAGS" >> $GITHUB_ENV
-          echo "LDFLAGS=$LDFLAGS" >> $GITHUB_ENV
-          echo "LIBS=$LIBS" >> $GITHUB_ENV
-          echo "PATH=${TOOLCHAIN_PATH}/bin:${PATH}" >> $GITHUB_PATH
-
-      - name: Checkout pcsx_rearmed source code
-        uses: actions/checkout@v4
-        with:
-          repository: libretro/pcsx_rearmed
-          path: pcsx_rearmed
-          fetch-depth: 1
-
-      - name: Generate config.h for GCW0 (修复方法)
-        run: |
-          cd pcsx_rearmed
-          
-          # 方法1: 使用autoconf生成configure脚本
-          if [ -f autogen.sh ]; then
-            ./autogen.sh
-          elif [ -f configure.ac ] || [ -f configure.in ]; then
-            autoreconf -fiv
-          fi
-          
-          # 方法2: 如果configure存在，尝试运行
-          if [ -f configure ]; then
-            # 先尝试交叉编译配置
-            ./configure \
-              --host=mipsel-gcw0-linux-uclibc \
-              --prefix=${SYSROOT}/usr \
-              --disable-sdl \
-              --disable-sdl2 \
-              --disable-opengl \
-              --disable-libpng \
-              --disable-freetype \
-              --disable-threads \
-              --enable-libretro \
-              CFLAGS="${CFLAGS}" \
-              CXXFLAGS="${CXXFLAGS}" \
-              LDFLAGS="${LDFLAGS}" \
-              CC="${CC}" \
-              CXX="${CXX}" \
-              AR="${AR}" \
-              STRIP="${STRIP}" || echo "configure可能失败，但继续构建"
-          fi
-          
-          # 方法3: 如果以上都失败，手动创建config.h
-          echo "手动创建config.h..."
-          cat > config.h << EOF
-          /* config.h for GCW0 mipsel */
-          #define PACKAGE "pcsx_rearmed"
-          #define PACKAGE_VERSION "1.9"
-          #define VERSION "1.9"
-          
-          /* Architecture */
-          #define ARCH_MIPS 1
-          #define ARCH_MIPSEL 1
-          #define __mips__ 1
-          #define __mipsel__ 1
-          #define MIPS32 1
-          #define WORDS_BIGENDIAN 0
-          #define WORDS_LITTLEENDIAN 1
-          
-          /* Libretro */
-          #define HAVE_LIBRETRO 1
-          #define LIBRETRO 1
-          
-          /* Features */
-          #define HAVE_DYNAREC 1
-          #define DYNAREC_LIGHTREC 1
-          #define DYNAREC_MIPS 0
-          #define DYNAREC_NONE 0
-          #define GPU_PEOPS 1
-          #define GPU_UNAI 0
-          #define DISABLE_THREADS 1
-          
-          /* Sound drivers */
-          #define SOUND_DRIVER_NONE 0
-          #define SOUND_DRIVER_SDL 1
-          #define SOUND_DRIVER_ALSA 0
-          #define SOUND_DRIVER_OSS 0
-          
-          /* Standard headers */
-          #define HAVE_STDINT_H 1
-          #define HAVE_STDLIB_H 1
-          #define HAVE_STRING_H 1
-          #define HAVE_UNISTD_H 1
-          #define HAVE_INTTYPES_H 1
-          #define HAVE_MEMORY_H 1
-          #define HAVE_STRINGS_H 1
-          #define HAVE_SYS_STAT_H 1
-          #define HAVE_SYS_TYPES_H 1
-          #define HAVE_FCNTL_H 1
-          #define HAVE_LIMITS_H 1
-          #define STDC_HEADERS 1
-          
-          /* Functions */
-          #define HAVE_MEMCPY 1
-          #define HAVE_MEMMOVE 1
-          #define HAVE_MEMSET 1
-          #define HAVE_STRCHR 1
-          #define HAVE_STRDUP 1
-          #define HAVE_STRSTR 1
-          #define HAVE_STRTOUL 1
-          
-          /* Graphics */
-          #define HAVE_OPENGL 0
-          #define HAVE_OPENGLES 0
-          #define HAVE_OPENGLES2 0
-          #define HAVE_OPENGLES3 0
-          
-          /* Endianness */
-          #define HAVE_BYTESWAP_H 1
-          #define HAVE_ENDIAN_H 0
-          #define HAVE_SYS_ENDIAN_H 0
-          #define HAVE_MACHINE_ENDIAN_H 0
-          
-          /* Platform specific */
-          #define __GCW0__ 1
-          #define GCW0 1
-          
-          EOF
-          
-          # 确保config.h被复制到libpcsxcore目录
-          if [ -f config.h ]; then
-            cp config.h libpcsxcore/config.h
-            echo "config.h已创建并复制到libpcsxcore/"
-          else
-            echo "警告: 无法创建config.h"
-          fi
-
-      - name: Build pcsx_rearmed with Makefile.libretro
-        run: |
-          cd pcsx_rearmed
-          
-          # 清理之前的构建
-          make -f Makefile.libretro clean || true
-          
-          # 构建核心 - 方法1: 使用完整的配置
-          echo "开始构建pcsx_rearmed..."
-          make -f Makefile.libretro \
-            platform=unix \
-            ARCH=mipsel \
-            WITH_DYNAREC=lightrec \
-            GPU=peops \
-            CC="${CC}" \
-            CXX="${CXX}" \
-            AR="${AR}" \
-            LD="${LD}" \
-            CFLAGS="${CFLAGS}" \
-            CXXFLAGS="${CXXFLAGS}" \
-            LDFLAGS="${LDFLAGS}" \
-            LIBS="${LIBS}" \
-            -j$(nproc) \
-            VERBOSE=1 2>&1 | tee build.log || echo "构建可能失败，继续检查"
-
-      - name: Alternative build if first fails
-        if: failure() || success()
-        run: |
-          cd pcsx_rearmed
-          
-          # 如果第一次构建失败，尝试备用方法
-          if [ ! -f pcsx_rearmed_libretro.so ] || [ $(stat -c%s pcsx_rearmed_libretro.so 2>/dev/null || echo 0) -lt 500000 ]; then
-            echo "第一次构建可能失败，尝试备用方法..."
-            
-            # 方法2: 使用更简单的配置
-            make -f Makefile.libretro clean || true
-            
-            # 直接使用make的默认设置
-            make -f Makefile.libretro \
-              CC="${CC}" \
-              CFLAGS="${CFLAGS}" \
-              LDFLAGS="${LDFLAGS}" \
-              -j$(nproc) \
-              DEBUG=0 \
-              2>&1 | tee build2.log
-          fi
-
-      - name: Final build attempt with specific options
-        if: failure() || success()
-        run: |
-          cd pcsx_rearmed
-          
-          # 如果仍然失败，尝试更具体的选项
-          if [ ! -f pcsx_rearmed_libretro.so ] || [ $(stat -c%s pcsx_rearmed_libretro.so 2>/dev/null || echo 0) -lt 500000 ]; then
-            echo "尝试最终构建方法..."
-            
-            make -f Makefile.libretro clean || true
-            
-            # 使用最简配置
-            make -f Makefile.libretro \
-              platform=unix \
-              ARCH=mipsel \
-              WITH_DYNAREC=none \
-              GPU=unai \
-              CC="${CC}" \
-              CFLAGS="-march=mips32 -mtune=mips32r2 -mhard-float -O2 ${CFLAGS}" \
-              -j$(nproc) \
-              2>&1 | tee build3.log
-          fi
-
-      - name: Check and verify build result
-        run: |
-          cd pcsx_rearmed
-          
-          if [ -f pcsx_rearmed_libretro.so ]; then
-            SIZE=$(stat -c%s pcsx_rearmed_libretro.so)
-            echo "✅ 编译成功！文件大小: $((SIZE/1024))KB"
-            
-            if [ $SIZE -lt 500000 ]; then
-              echo "⚠️ 警告：文件大小可能偏小 (期望 > 500KB)"
-            fi
-            
-            # 检查文件类型
-            echo "文件信息:"
-            file pcsx_rearmed_libretro.so || true
-            
-            # 检查是否包含必要的符号
-            echo "检查符号表..."
-            ${CROSS_COMPILE}nm pcsx_rearmed_libretro.so 2>/dev/null | head -20 || true
-            
-          else
-            echo "❌ 编译失败！找不到输出文件"
-            
-            # 列出可能的输出文件
-            echo "当前目录内容:"
-            ls -la *.so *.dll 2>/dev/null || true
-            
-            # 检查是否有其他名称的文件
-            find . -name "*.so" -o -name "*.dll" -o -name "pcsx*" | head -10
-            
-            # 显示构建日志
-            echo "最后100行构建日志:"
-            tail -100 build.log 2>/dev/null || echo "无构建日志"
-            
-            exit 1
-          fi
-
-      - name: Upload build artifact
-        uses: actions/upload-artifact@v4
-        with:
-          name: pcsx_rearmed-gcw0-core
-          path: pcsx_rearmed/pcsx_rearmed_libretro.so
-          retention-days: 30
-        if: success()
+    - name: Setup GCW0 toolchain
+      run: |
+        # 创建/opt目录并设置权限
+        sudo mkdir -p /opt
+        sudo chmod 777 /opt
+        
+        # 下载工具链
+        cd /opt
+        wget https://github.com/game-de-it/GKD_pixel/releases/download/GKDpixel-toolchain-v1/mipsel-gcw0-linux-uclibc_sdk-buildroot.tar.gz
+        
+        # 解压工具链
+        tar zxvf mipsel-gcw0-linux-uclibc_sdk-buildroot.tar.gz
+        
+        # 重命名工具链目录（为了兼容性）
+        mv mipsel-gcw0-linux-uclibc_sdk-buildroot gcw0-toolchain
+        
+        # 运行重定位脚本
+        cd gcw0-toolchain
+        ./relocate-sdk.sh
+        
+        # 设置环境变量
+        echo "CROSS_COMPILE=/opt/gcw0-toolchain/usr/bin/mipsel-gcw0-linux-uclibc-" >> $GITHUB_ENV
+        echo "SYSROOT=/opt/gcw0-toolchain/usr/mipsel-gcw0-linux-uclibc/sysroot" >> $GITHUB_ENV
+        echo "CC=/opt/gcw0-toolchain/usr/bin/mipsel-gcw0-linux-uclibc-gcc" >> $GITHUB_ENV
+        echo "CXX=/opt/gcw0-toolchain/usr/bin/mipsel-gcw0-linux-uclibc-g++" >> $GITHUB_ENV
+        echo "AR=/opt/gcw0-toolchain/usr/bin/mipsel-gcw0-linux-uclibc-ar" >> $GITHUB_ENV
+        echo "LD=/opt/gcw0-toolchain/usr/bin/mipsel-gcw0-linux-uclibc-ld" >> $GITHUB_ENV
+        echo "PATH=/opt/gcw0-toolchain/usr/bin:$PATH" >> $GITHUB_ENV
+        
+        # 设置编译标志
+        echo "CFLAGS=-ffast-math -march=mips32 -mtune=mips32r2 -mhard-float -fdata-sections -ffunction-sections" >> $GITHUB_ENV
+        echo "CXXFLAGS=-ffast-math -march=mips32 -mtune=mips32r2 -mhard-float -fdata-sections -ffunction-sections" >> $GITHUB_ENV
+        
+    - name: Clone pcsx_rearmed repository
+      run: |
+        git clone https://github.com/libretro/pcsx_rearmed.git
+        cd pcsx_rearmed
+        git submodule update --init
+        
+    - name: Build pcsx_rearmed
+      run: |
+        cd pcsx_rearmed
+        # 使用libretro构建系统
+        make -f Makefile.libretro platform=gcw0
+        
+    - name: Verify the build
+      run: |
+        cd pcsx_rearmed
+        file pcsx_rearmed_libretro.so
+        echo "Build completed successfully!"
+        
+    - name: Upload artifact
+      uses: actions/upload-artifact@v4
+      with:
+        name: pcsx_rearmed-gcw0
+        path: pcsx_rearmed/pcsx_rearmed_libretro.so
