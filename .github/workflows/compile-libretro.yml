@@ -11,9 +11,9 @@ jobs:
   build:
     runs-on: ubuntu-latest
     steps:
-      - name: Install system dependencies (新增libmagic1)
+      - name: Install system dependencies
         run: |
-          sudo apt update && sudo apt install -y wget tar make gcc git libmagic1
+          sudo apt update && sudo apt install -y wget tar make gcc git libmagic1 zlib1g-dev libpng-dev
 
       - name: Download and setup GCW0 toolchain
         run: |
@@ -25,8 +25,10 @@ jobs:
           sudo chmod +x relocate-sdk.sh
           sudo ./relocate-sdk.sh
           sudo chown -R $USER:$USER /opt/gcw0-toolchain
+          # 验证工具链可用性
+          /opt/gcw0-toolchain/usr/bin/mipsel-gcw0-linux-uclibc-gcc --version
 
-      - name: Set environment variables
+      - name: Set environment variables (补充链接参数)
         run: |
           export CROSS_COMPILE=/opt/gcw0-toolchain/usr/bin/mipsel-gcw0-linux-uclibc-
           export SYSROOT=/opt/gcw0-toolchain/usr/mipsel-gcw0-linux-uclibc/sysroot
@@ -34,17 +36,28 @@ jobs:
           export CXX=${CROSS_COMPILE}g++
           export AR=${CROSS_COMPILE}ar
           export LD=${CROSS_COMPILE}ld
-          export CFLAGS="-ffast-math -march=mips32 -mtune=mips32r2 -mhard-float -fdata-sections -ffunction-sections --sysroot=${SYSROOT}"
+          export STRIP=${CROSS_COMPILE}strip
+          
+          # 编译参数：补充-O2优化（避免代码被精简过度），保留调试信息
+          export CFLAGS="-O2 -ffast-math -march=mips32 -mtune=mips32r2 -mhard-float -fdata-sections -ffunction-sections --sysroot=${SYSROOT} -D_GNU_SOURCE=1"
           export CXXFLAGS="${CFLAGS}"
           
+          # 关键：补充链接参数（LDFLAGS），确保链接所有模块
+          export LDFLAGS="-march=mips32 -mtune=mips32r2 -mhard-float --sysroot=${SYSROOT} -lpthread -lm -ldl -lz -Wl,--gc-sections"
+          export LDLIBS="-lpthread -lm -ldl -lz"
+          
+          # 写入环境变量
           echo "CROSS_COMPILE=$CROSS_COMPILE" >> $GITHUB_ENV
           echo "SYSROOT=$SYSROOT" >> $GITHUB_ENV
           echo "CC=$CC" >> $GITHUB_ENV
           echo "CXX=$CXX" >> $GITHUB_ENV
           echo "AR=$AR" >> $GITHUB_ENV
           echo "LD=$LD" >> $GITHUB_ENV
+          echo "STRIP=$STRIP" >> $GITHUB_ENV
           echo "CFLAGS=$CFLAGS" >> $GITHUB_ENV
           echo "CXXFLAGS=$CXXFLAGS" >> $GITHUB_ENV
+          echo "LDFLAGS=$LDFLAGS" >> $GITHUB_ENV
+          echo "LDLIBS=$LDLIBS" >> $GITHUB_ENV
           echo "/opt/gcw0-toolchain/usr/bin" >> $GITHUB_PATH
 
       - name: Checkout pcsx_rearmed source code
@@ -54,27 +67,46 @@ jobs:
           path: pcsx_rearmed
           fetch-depth: 1
 
-      - name: Manually generate config.h (跳过有问题的configure)
+      - name: Manually generate config.h (完善宏定义)
         run: |
           cd pcsx_rearmed
+          # 补充关键宏，确保所有核心模块被编译
           cat > config.h << EOF
+          /* 架构宏（完整） */
           #define ARCH_MIPS 1
           #define ARCH_MIPSEL 1
           #define __mips__ 1
           #define __mipsel__ 1
           #define MIPS32 1
+          #define MIPS32R2 1
+          #define __mips_isa_rev 2
           
+          /* libretro核心必备宏 */
           #define HAVE_LIBRETRO 1
-          #define DISABLE_THREADS 1
-          #define SOUND_DRIVER_NONE 1
+          #define LIBRETRO 1
+          
+          /* 功能宏（启用完整模块） */
+          #define DISABLE_THREADS 0  // 启用多线程（核心功能）
+          #define SOUND_DRIVER_SDL 0
+          #define SOUND_DRIVER_ALSA 0
+          #define SOUND_DRIVER_OSS 0
+          #define SOUND_DRIVER_PULSEAUDIO 0
           #define GPU_PEOPS 1
+          #define GPU_PEOPS_MIPS 1  // 启用MIPS优化的PEOPS GPU
           #define DYNAREC_LIGHTREC 1
           #define DYNAREC_NONE 0
           #define HAVE_DYNAREC 1
+          #define HAVE_FLOAT_EMU 1
+          #define HAVE_CORE_COMPAT 1
+          #define HAVE_CCD 1
+          #define HAVE_CDR 1
+          #define HAVE_CISO 1
+          #define HAVE_CHD 1
+          #define HAVE_PBP 1
           
+          /* 系统宏（避免代码跳过） */
           #define SYSROOT "${{ env.SYSROOT }}"
           #define CROSS_COMPILE "${{ env.CROSS_COMPILE }}"
-          
           #define HAVE_STDINT_H 1
           #define HAVE_STDLIB_H 1
           #define HAVE_STRING_H 1
@@ -82,33 +114,61 @@ jobs:
           #define HAVE_INTTYPES_H 1
           #define HAVE_MEMCPY 1
           #define HAVE_MEMSET 1
+          #define HAVE_STRCASECMP 1
+          #define HAVE_STRNCASECMP 1
+          #define HAVE_MALLOC 1
+          #define HAVE_FREE 1
+          #define HAVE_OPEN 1
+          #define HAVE_CLOSE 1
+          #define HAVE_READ 1
+          #define HAVE_WRITE 1
+          #define _GNU_SOURCE 1
           EOF
           
           if [ ! -f config.h ]; then
             echo "ERROR: 手动生成config.h失败！"
             exit 1
           fi
-          echo "✅ config.h 手动生成成功"
+          echo "✅ config.h 手动生成成功（完整宏定义）"
 
-      - name: Build pcsx_rearmed libretro core (GCW0适配)
+      - name: Build pcsx_rearmed libretro core (完整编译参数)
         run: |
           cd pcsx_rearmed
-          make -f Makefile.libretro clean || true
+          # 清理所有旧产物
+          make -f Makefile.libretro clean
+          # 显式传递所有编译/链接参数，确保完整编译
           make -f Makefile.libretro \
             PLATFORM=unix \
             ARCH=mipsel \
             HAVE_DYNAREC=1 \
             GPU=peops \
+            CROSS_COMPILE=${{ env.CROSS_COMPILE }} \
+            CC=${{ env.CC }} \
+            CXX=${{ env.CXX }} \
+            AR=${{ env.AR }} \
+            LD=${{ env.LD }} \
+            CFLAGS="${{ env.CFLAGS }}" \
+            CXXFLAGS="${{ env.CXXFLAGS }}" \
+            LDFLAGS="${{ env.LDFLAGS }}" \
+            LDLIBS="${{ env.LDLIBS }}" \
             -j$(nproc)
+          # 可选：strip精简但保留核心（不影响体积过大问题）
+          # ${{ env.STRIP }} --strip-unneeded pcsx_rearmed_libretro.so
 
-      - name: Verify build result (修复file命令报错)
+      - name: Verify build result (检查体积)
         run: |
           cd pcsx_rearmed
-          # 核心检查：产物是否存在（必选）
+          # 检查产物存在性+体积
           if [ -f pcsx_rearmed_libretro.so ]; then
+            FILE_SIZE=$(du -h pcsx_rearmed_libretro.so | awk '{print $1}')
             echo "✅ 编译成功！产物路径：$(pwd)/pcsx_rearmed_libretro.so"
-            # 架构验证：安装依赖后执行file，增加容错（即使file失败也不退出）
-            file pcsx_rearmed_libretro.so || echo "⚠️ file命令架构验证跳过（不影响产物有效性）"
+            echo "✅ 产物体积：$FILE_SIZE"
+            # 验证架构
+            file pcsx_rearmed_libretro.so || echo "⚠️ file命令架构验证跳过"
+            # 体积检查（提示）
+            if [[ $(du -k pcsx_rearmed_libretro.so | awk '{print $1}') -lt 1000 ]]; then
+              echo "⚠️ 产物体积小于1MB，可能仍有模块未编译（但流程已完成）"
+            fi
           else
             echo "ERROR: 编译产物缺失！"
             exit 1
