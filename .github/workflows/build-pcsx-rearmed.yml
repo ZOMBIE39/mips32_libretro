@@ -3,59 +3,112 @@ name: Build pcsx_rearmed for GCW0
 on:
   push:
     branches: [ main ]
-  workflow_dispatch:
+  pull_request:
+    branches: [ main ]
+  workflow_dispatch:  # 手动触发
 
+env:
+  TOOLCHAIN_URL: "https://github.com/game-de-it/GKD_pixel/releases/download/GKDpixel-toolchain-v1/mipsel-gcw0-linux-uclibc_sdk-buildroot.tar.gz"
+  TOOLCHAIN_DIR: "/opt/gcw0-toolchain"
+  
 jobs:
   build:
     runs-on: ubuntu-latest
     
     steps:
-    - uses: actions/checkout@v4
-    
-    - name: Setup toolchain
+    - name: Checkout code
+      uses: actions/checkout@v4
+      
+    - name: Install dependencies
       run: |
+        sudo apt-get update
+        sudo apt-get install -y \
+          build-essential \
+          git \
+          wget \
+          tar \
+          gzip \
+          bzip2 \
+          python3 \
+          make \
+          cmake \
+          autoconf \
+          automake \
+          libtool \
+          pkg-config \
+          libsdl2-dev \
+          zlib1g-dev \
+          libpng-dev \
+          libvorbis-dev \
+          libflac-dev \
+          libmpg123-dev
+          
+    - name: Download and setup toolchain
+      run: |
+        # 创建/opt目录并设置权限
         sudo mkdir -p /opt
         sudo chmod 777 /opt
+        
+        # 下载工具链
         cd /opt
-        wget https://github.com/game-de-it/GKD_pixel/releases/download/GKDpixel-toolchain-v1/mipsel-gcw0-linux-uclibc_sdk-buildroot.tar.gz
+        wget ${{ env.TOOLCHAIN_URL }}
+        
+        # 解压工具链
         tar zxvf mipsel-gcw0-linux-uclibc_sdk-buildroot.tar.gz
+        
+        # 重命名目录（可选）
         mv mipsel-gcw0-linux-uclibc_sdk-buildroot gcw0-toolchain
+        
+        # 运行重定位脚本
         cd gcw0-toolchain
         ./relocate-sdk.sh
         
-    - name: Setup environment
+    - name: Set up environment variables
       run: |
-        export TOOLCHAIN=/opt/gcw0-toolchain
-        export PATH=$TOOLCHAIN/usr/bin:$PATH
-        export CC=mipsel-gcw0-linux-uclibc-gcc
-        export CXX=mipsel-gcw0-linux-uclibc-g++
-        export AR=mipsel-gcw0-linux-uclibc-ar
-        export LD=mipsel-gcw0-linux-uclibc-ld
-        export STRIP=mipsel-gcw0-linux-uclibc-strip
-        export RANLIB=mipsel-gcw0-linux-uclibc-ranlib
-        
-        echo "CC=$CC" >> $GITHUB_ENV
-        echo "CXX=$CXX" >> $GITHUB_ENV
-        echo "AR=$AR" >> $GITHUB_ENV
-        echo "LD=$LD" >> $GITHUB_ENV
-        echo "PATH=$PATH" >> $GITHUB_ENV
-        echo "TOOLCHAIN=$TOOLCHAIN" >> $GITHUB_ENV
-        
-    - name: Clone and build pcsx_rearmed
-      run: |
-        git clone --depth=1 https://github.com/libretro/pcsx_rearmed.git
-        cd pcsx_rearmed
+        echo "CROSS_COMPILE=${{ env.TOOLCHAIN_DIR }}/usr/bin/mipsel-gcw0-linux-uclibc-" >> $GITHUB_ENV
+        echo "SYSROOT=${{ env.TOOLCHAIN_DIR }}/usr/mipsel-gcw0-linux-uclibc/sysroot" >> $GITHUB_ENV
+        echo "CC=${{ env.TOOLCHAIN_DIR }}/usr/bin/mipsel-gcw0-linux-uclibc-gcc" >> $GITHUB_ENV
+        echo "CXX=${{ env.TOOLCHAIN_DIR }}/usr/bin/mipsel-gcw0-linux-uclibc-g++" >> $GITHUB_ENV
+        echo "AR=${{ env.TOOLCHAIN_DIR }}/usr/bin/mipsel-gcw0-linux-uclibc-ar" >> $GITHUB_ENV
+        echo "LD=${{ env.TOOLCHAIN_DIR }}/usr/bin/mipsel-gcw0-linux-uclibc-ld" >> $GITHUB_ENV
         
         # 设置编译标志
-        export CFLAGS="-ffast-math -march=mips32 -mtune=mips32r2 -mhard-float -fdata-sections -ffunction-sections"
-        export CXXFLAGS="$CFLAGS"
-        export LDFLAGS="-Wl,--gc-sections"
+        echo "CFLAGS=-ffast-math -march=mips32 -mtune=mips32r2 -mhard-float -fdata-sections -ffunction-sections" >> $GITHUB_ENV
+        echo "CXXFLAGS=-ffast-math -march=mips32 -mtune=mips32r2 -mhard-float -fdata-sections -ffunction-sections" >> $GITHUB_ENV
         
-        # 编译
-        make -f Makefile.libretro platform=gcw0
+        # 添加到PATH
+        echo "${{ env.TOOLCHAIN_DIR }}/usr/bin" >> $GITHUB_PATH
+        
+    - name: Clone pcsx_rearmed repository
+      run: |
+        git clone https://github.com/libretro/pcsx_rearmed.git
+        cd pcsx_rearmed
+        
+    - name: Build pcsx_rearmed
+      run: |
+        cd pcsx_rearmed
+        
+        # 配置编译环境
+        export PATH="${{ env.TOOLCHAIN_DIR }}/usr/bin:$PATH"
+        export CROSS_COMPILE="${{ env.CROSS_COMPILE }}"
+        
+        # 使用platform=gcw0参数编译
+        make platform=gcw0
+        
+    - name: Check if binary was created
+      run: |
+        cd pcsx_rearmed
+        if [ -f "pcsx_rearmed_libretro.so" ]; then
+          echo "Build successful!"
+          ls -la *.so
+        else
+          echo "Build failed - no .so file found"
+          exit 1
+        fi
         
     - name: Upload artifact
       uses: actions/upload-artifact@v4
       with:
-        name: pcsx-rearmed-core
+        name: pcsx_rearmed-gcw0
         path: pcsx_rearmed/pcsx_rearmed_libretro.so
+        retention-days: 7
